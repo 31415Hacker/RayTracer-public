@@ -13,7 +13,7 @@ await pathTracer.initialize();
 
 let lastTime = performance.now();
 
-function main() {
+async function main() {
     const now = performance.now();
     const dt = (now - lastTime) / 1000;
     lastTime = now;
@@ -26,8 +26,8 @@ function main() {
     pathTracer.setCameraPosition(...camPos);
     pathTracer.setCameraQuaternion(...camQuat);
 
-    pathTracer.render();
+    await pathTracer.render();
     requestAnimationFrame(main);
 }
 
-main();
+await main();
