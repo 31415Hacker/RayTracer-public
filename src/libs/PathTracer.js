@@ -9,9 +9,26 @@ export class PathTracer {
     this.device = null;
     this.canvasContext = null;
 
-    // 🟢 Default camera parameters
+    // Camera
     this.cameraPosition = [0.0, 0.0, 2.5];
     this.cameraQuaternion = [0.0, 0.0, 0.0, 1.0]; // xyzw
+
+    // BVH build controls
+    this.maxDepth = 4; // adjust as you like
+    this.batchSize = 1;
+
+    // Derived BVH sizing (filled in initializeBuffersAndTextures)
+    this.numNodes = 0;
+    this.bvhFloats = 0;
+    this.bvhSizeBytes = 0;
+  }
+
+  // ---------- utility: compute sizing from depth ----------
+  computeBVHSizing(maxDepth) {
+    const numNodes = (1 << (maxDepth + 1)) - 1; // full binary tree
+    const bvhFloats = numNodes * 6 + 1; // 6 floats/node + 1 float metadata (numNodes)
+    const bvhSizeBytes = bvhFloats * 4; // bytes
+    return { numNodes, bvhFloats, bvhSizeBytes };
   }
 
   async initialize() {
@@ -21,56 +38,70 @@ export class PathTracer {
     await this.createBindGroupsAndPipelines();
   }
 
+  // ---------- BVH builder ----------
   async buildBVH(tris) {
     const device = this.device;
     const encoder = device.createCommandEncoder();
     const numTriangles = tris.length / 9;
 
-    // ─────────────────────────────
-    // 1. Upload triangles buffer
-    // ─────────────────────────────
+    // 0) Ensure BVH buffer sized for current depth
+    this.ensureBVHBuffer(this.maxDepth);
+
+    // 1) Upload triangles
     device.queue.writeBuffer(this.buffers.triangles, 0, tris.buffer);
 
-    // ─────────────────────────────
-    // 2. Set builder parameters (UBO)
-    // ─────────────────────────────
-    const maxDepth  = 10;   // adjustable depth
-    const batchSize = 1;    // nodes per thread
-    const builderUBO = new Uint32Array([numTriangles, maxDepth, batchSize, 0]);
+    // 2) Builder UBO (numTriangles, maxDepth, batchSize, padding)
+    const builderUBO = new Uint32Array([
+      numTriangles,
+      this.maxDepth,
+      this.batchSize,
+      0,
+    ]);
     device.queue.writeBuffer(this.buffers.builderUBO, 0, builderUBO.buffer);
 
-    // ─────────────────────────────
-    // 3. GPU builds BVH entirely (including root)
-    // ─────────────────────────────
-    let currentLevelStart = 0;
-    let currentLevelEnd   = 1;
-
-    for (let level = 0; level < maxDepth; level++) {
-      const nextLevelStart = currentLevelEnd;
-      const nextLevelEnd   = nextLevelStart + (currentLevelEnd - currentLevelStart) * 2;
-      const numNodesThisLevel = currentLevelEnd - currentLevelStart;
-
-      const numWorkgroups = Math.ceil(numNodesThisLevel / batchSize);
-
+    // 3) Dispatch the builder once (shader does breadth-first internally)
+    {
+      const groups = Math.ceil((1 << this.maxDepth) / this.batchSize);
       const pass = encoder.beginComputePass();
       pass.setPipeline(this.pipelines.BVHBuilder);
       pass.setBindGroup(0, this.bindGroups.BVHBuilder);
-      pass.dispatchWorkgroups(numWorkgroups);
+      pass.dispatchWorkgroups(groups);
       pass.end();
-
-      currentLevelStart = nextLevelStart;
-      currentLevelEnd   = nextLevelEnd;
     }
 
-    // ─────────────────────────────
-    // 4. Submit all compute passes
-    // ─────────────────────────────
+    // 4) Submit
     device.queue.submit([encoder.finish()]);
-
-    // Optional: wait for GPU to finish (useful for debugging BVH readback)
     await device.queue.onSubmittedWorkDone();
   }
 
+  // Allocate/reallocate BVH buffer exactly to required size
+  ensureBVHBuffer(maxDepth) {
+    const sizing = this.computeBVHSizing(maxDepth);
+    const needRealloc =
+      !this.buffers?.BVH || this.bvhSizeBytes !== sizing.bvhSizeBytes;
+
+    this.numNodes = sizing.numNodes;
+    this.bvhFloats = sizing.bvhFloats;
+    this.bvhSizeBytes = sizing.bvhSizeBytes;
+
+    if (!needRealloc) return;
+
+    // (Re)create BVH buffer
+    if (this.buffers?.BVH && this.buffers.BVH.destroy) {
+      this.buffers.BVH.destroy();
+    }
+
+    this.buffers.BVH = this.device.createBuffer({
+      size: this.bvhSizeBytes,
+      usage:
+        GPUBufferUsage.STORAGE |
+        GPUBufferUsage.COPY_DST |
+        GPUBufferUsage.COPY_SRC,
+    });
+
+    // Rebuild any bind groups that reference BVH
+    this.updateBindGroups();
+  }
 
   async getDeviceAndContext() {
     this.adapter = await navigator.gpu.requestAdapter();
@@ -106,12 +137,16 @@ export class PathTracer {
     const width = this.canvas.width;
     const height = this.canvas.height;
 
+    // Precompute BVH size for the initial depth
+    const sizing = this.computeBVHSizing(this.maxDepth);
+    this.numNodes = sizing.numNodes;
+    this.bvhFloats = sizing.bvhFloats;
+    this.bvhSizeBytes = sizing.bvhSizeBytes;
+
     this.buffers = {
       readBuffer: this.device.createBuffer({
         size: 16,
-        usage:
-          GPUBufferUsage.MAP_READ |
-          GPUBufferUsage.COPY_DST,
+        usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
       }),
       rendererUBO: this.device.createBuffer({
         size: 256,
@@ -135,7 +170,7 @@ export class PathTracer {
           GPUBufferUsage.COPY_SRC,
       }),
       BVH: this.device.createBuffer({
-        size: 16 * MB,
+        size: this.bvhSizeBytes, // exact size
         usage:
           GPUBufferUsage.STORAGE |
           GPUBufferUsage.COPY_DST |
@@ -167,64 +202,88 @@ export class PathTracer {
     });
 
     // --- Layouts ---
-    const bvhBuilderBindGroupLayout = device.createBindGroupLayout({
-      entries: [
-        { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
-        { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
-        { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
-      ],
-    });
-
-    const rendererBindGroupLayout = device.createBindGroupLayout({
-      entries: [
-        {
-          binding: 0,
-          visibility: GPUShaderStage.COMPUTE,
-          storageTexture: {
-            access: "write-only",
-            format: "rgba8unorm",
-            viewDimension: "2d",
+    this.layouts = {
+      bvhBuilder: device.createBindGroupLayout({
+        entries: [
+          {
+            binding: 0,
+            visibility: GPUShaderStage.COMPUTE,
+            buffer: { type: "storage" },
           },
-        },
-        {
-          binding: 1,
-          visibility: GPUShaderStage.COMPUTE,
-          buffer: { type: "uniform" },
-        },
-        {
-          binding: 2,
-          visibility: GPUShaderStage.COMPUTE,
-          buffer: { type: "read-only-storage" },
-        },
-        {
-          binding: 3,
-          visibility: GPUShaderStage.COMPUTE,
-          buffer: { type: "read-only-storage" },
-        },
-      ],
-    });
-
-    const tonemapperBindGroupLayout = device.createBindGroupLayout({
-      entries: [
-        { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
-        { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: { type: "filtering" } },
-      ],
-    });
+          {
+            binding: 1,
+            visibility: GPUShaderStage.COMPUTE,
+            buffer: { type: "read-only-storage" },
+          },
+          {
+            binding: 2,
+            visibility: GPUShaderStage.COMPUTE,
+            buffer: { type: "uniform" },
+          },
+        ],
+      }),
+      renderer: device.createBindGroupLayout({
+        entries: [
+          {
+            binding: 0,
+            visibility: GPUShaderStage.COMPUTE,
+            storageTexture: {
+              access: "write-only",
+              format: "rgba8unorm",
+              viewDimension: "2d",
+            },
+          },
+          {
+            binding: 1,
+            visibility: GPUShaderStage.COMPUTE,
+            buffer: { type: "uniform" },
+          },
+          {
+            binding: 2,
+            visibility: GPUShaderStage.COMPUTE,
+            buffer: { type: "read-only-storage" },
+          },
+          {
+            binding: 3,
+            visibility: GPUShaderStage.COMPUTE,
+            buffer: { type: "read-only-storage" },
+          },
+        ],
+      }),
+      tonemapper: device.createBindGroupLayout({
+        entries: [
+          {
+            binding: 0,
+            visibility: GPUShaderStage.FRAGMENT,
+            texture: { sampleType: "float" },
+          },
+          {
+            binding: 1,
+            visibility: GPUShaderStage.FRAGMENT,
+            sampler: { type: "filtering" },
+          },
+        ],
+      }),
+    };
 
     // --- Pipelines ---
     this.pipelines = {
       BVHBuilder: device.createComputePipeline({
-        layout: device.createPipelineLayout({ bindGroupLayouts: [bvhBuilderBindGroupLayout] }),
+        layout: device.createPipelineLayout({
+          bindGroupLayouts: [this.layouts.bvhBuilder],
+        }),
         compute: { module: this.shaders.BVHBuilder.shader, entryPoint: "main" },
       }),
-
       renderer: device.createComputePipeline({
-        layout: device.createPipelineLayout({ bindGroupLayouts: [rendererBindGroupLayout] }),
+        layout: device.createPipelineLayout({
+          bindGroupLayouts: [this.layouts.renderer],
+        }),
         compute: { module: this.shaders.renderer.shader, entryPoint: "main" },
       }),
-
       tonemapper: device.createRenderPipeline({
-        layout: device.createPipelineLayout({ bindGroupLayouts: [tonemapperBindGroupLayout] }),
+        layout: device.createPipelineLayout({
+          bindGroupLayouts: [this.layouts.tonemapper],
+        }),
         vertex: { module: this.shaders.tonemapper.shader, entryPoint: "vmain" },
         fragment: {
           module: this.shaders.tonemapper.shader,
@@ -235,28 +294,33 @@ export class PathTracer {
       }),
     };
 
-    // --- Bind Groups ---
+    this.updateBindGroups();
+  }
+
+  // Recreate bind groups that reference BVH when BVH is resized
+  updateBindGroups() {
+    const device = this.device;
+
     this.bindGroups = {
       BVHBuilder: device.createBindGroup({
-        layout: bvhBuilderBindGroupLayout,
-        entries: [{ binding: 0, resource: { buffer: this.buffers.BVH } },
-                  { binding: 1, resource: { buffer: this.buffers.triangles } },
-                  { binding: 2, resource: { buffer: this.buffers.builderUBO } }
+        layout: this.layouts.bvhBuilder,
+        entries: [
+          { binding: 0, resource: { buffer: this.buffers.BVH } },
+          { binding: 1, resource: { buffer: this.buffers.triangles } },
+          { binding: 2, resource: { buffer: this.buffers.builderUBO } },
         ],
       }),
-
       renderer: device.createBindGroup({
-        layout: rendererBindGroupLayout,
+        layout: this.layouts.renderer,
         entries: [
           { binding: 0, resource: this.textures.outputTexture.createView() },
           { binding: 1, resource: { buffer: this.buffers.rendererUBO } },
           { binding: 2, resource: { buffer: this.buffers.triangles } },
-          { binding: 3, resource: { buffer: this.buffers.BVH } }
+          { binding: 3, resource: { buffer: this.buffers.BVH } },
         ],
       }),
-
       tonemapper: device.createBindGroup({
-        layout: tonemapperBindGroupLayout,
+        layout: this.layouts.tonemapper,
         entries: [
           { binding: 0, resource: this.textures.outputTexture.createView() },
           { binding: 1, resource: this.sampler },
@@ -265,24 +329,20 @@ export class PathTracer {
     };
   }
 
-  async readBVH(sizeInBytes = 1024) {
+  // Map the whole BVH (or a custom slice) for debugging
+  async readBVH(sizeInBytes = this.bvhSizeBytes) {
     const device = this.device;
     const encoder = device.createCommandEncoder();
 
-    // Create a temporary buffer for mapping
     const readBuffer = device.createBuffer({
       size: sizeInBytes,
       usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
     });
 
-    // Copy data from BVH buffer to readBuffer
     encoder.copyBufferToBuffer(this.buffers.BVH, 0, readBuffer, 0, sizeInBytes);
     device.queue.submit([encoder.finish()]);
 
-    // Wait for GPU to complete
     await readBuffer.mapAsync(GPUMapMode.READ);
-
-    // Read data as Float32 or Uint32 depending on structure
     const array = new Float32Array(readBuffer.getMappedRange().slice(0));
     readBuffer.unmap();
 
@@ -290,52 +350,92 @@ export class PathTracer {
     return array;
   }
 
-  // 🟢 Called every frame
+  // ---------- per-frame ----------
   async render() {
-    const encoder = this.device.createCommandEncoder();
-
+    // Example scene: 3 triangles
     const trianglesData = new Float32Array([
-      // Triangle 1
-      -1.0, -1.0, 0.0,
-       1.0, -1.0, 0.0,
-       0.0,  1.0, 0.0,
-      // Triangle 2
-      -0.5, -0.5, 1.0,
-       0.5, -0.5, 1.0,
-       0.0,  0.5, 1.0,
-      // Triangle 3
-      -1.0,  1.0, -1.0,
-       1.0,  1.0, -1.0,
-       0.0, -1.0, -1.0,
+      // Front (z = +1)
+      -1, -1,  1,
+      1, -1,  1,
+      1,  1,  1,
+      -1, -1,  1,
+      1,  1,  1,
+      -1,  1,  1,
+
+      // Back (z = -1)
+      1, -1, -1,
+      -1, -1, -1,
+      -1,  1, -1,
+      1, -1, -1,
+      -1,  1, -1,
+      1,  1, -1,
+
+      // Left (x = -1)
+      -1, -1, -1,
+      -1, -1,  1,
+      -1,  1,  1,
+      -1, -1, -1,
+      -1,  1,  1,
+      -1,  1, -1,
+
+      // Right (x = +1)
+      1, -1,  1,
+      1, -1, -1,
+      1,  1, -1,
+      1, -1,  1,
+      1,  1, -1,
+      1,  1,  1,
+
+      // Top (y = +1)
+      -1,  1,  1,
+      1,  1,  1,
+      1,  1, -1,
+      -1,  1,  1,
+      1,  1, -1,
+      -1,  1, -1,
+
+      // Bottom (y = -1)
+      -1, -1, -1,
+      1, -1, -1,
+      1, -1,  1,
+      -1, -1, -1,
+      1, -1,  1,
+      -1, -1,  1,
     ]);
 
-    const numTriangles = trianglesData.length / 9; // 3 vertices per triangle, 3 components per vertex
+    const numTriangles = trianglesData.length / 9;
 
-    // --- UBO (matches WGSL struct) ---
-    const UBO = new Float32Array([
-      this.canvas.width, this.canvas.height, 0.0, 0.0, // resolution
-      ...this.cameraPosition, numTriangles,            // camPos.xyz + numTriangles
-      ...this.cameraQuaternion                         // camQuat.xyzw
-    ]);
-
-    this.device.queue.writeBuffer(this.buffers.rendererUBO, 0, UBO.buffer);
-    this.device.queue.writeBuffer(this.buffers.triangles, 0, trianglesData.buffer);
-
+    // Build BVH first (allocates the exact BVH size if needed)
     await this.buildBVH(new Float32Array(trianglesData));
 
-    function parseAABBs(f32) {
-      const aabbs = [];
-      for (let i = 0; i < f32.length; i += 6) {
-        aabbs.push({
-          min: f32.slice(i, i + 3),
-          max: f32.slice(i + 3, i + 6),
-        });
-      }
-      return aabbs;
-    }
+    // (Optional) read back to inspect
+    const bvhData = await this.readBVH();
+    const numNodesFromSize = Math.floor((bvhData.length - 1) / 6); // minus metadata float
+    console.log(`${numNodesFromSize} BVH nodes (derived from buffer length)`);
 
-    console.table(parseAABBs(await this.readBVH(256)));
+    // Write renderer UBO AFTER build so numNodes is in sync
+    const UBO = new Float32Array([
+      this.canvas.width,
+      this.canvas.height,
+      0.0,
+      0.0, // resolution
+      ...this.cameraPosition,
+      numTriangles, // camPos.xyz + numTriangles
+      ...this.cameraQuaternion, // camQuat.xyzw
+      this.numNodes,
+      0.0,
+      0.0,
+      0.0, // nodes.x = numNodes
+    ]);
+    this.device.queue.writeBuffer(this.buffers.rendererUBO, 0, UBO.buffer);
+    this.device.queue.writeBuffer(
+      this.buffers.triangles,
+      0,
+      trianglesData.buffer
+    );
 
+    // ---------- render compute ----------
+    const encoder = this.device.createCommandEncoder();
 
     {
       const pass = encoder.beginComputePass();
@@ -348,16 +448,18 @@ export class PathTracer {
       pass.end();
     }
 
-    // --- Tonemapper ---
+    // ---------- tonemapper ----------
     {
       const view = this.canvasContext.getCurrentTexture().createView();
       const pass = encoder.beginRenderPass({
-        colorAttachments: [{
-          view,
-          loadOp: "clear",
-          storeOp: "store",
-          clearValue: { r: 0, g: 0, b: 0, a: 1 },
-        }],
+        colorAttachments: [
+          {
+            view,
+            loadOp: "clear",
+            storeOp: "store",
+            clearValue: { r: 0, g: 0, b: 0, a: 1 },
+          },
+        ],
       });
       pass.setPipeline(this.pipelines.tonemapper);
       pass.setBindGroup(0, this.bindGroups.tonemapper);
@@ -371,7 +473,6 @@ export class PathTracer {
   setCameraPosition(x, y, z) {
     this.cameraPosition = [x, y, z];
   }
-
   setCameraQuaternion(x, y, z, w) {
     this.cameraQuaternion = [x, y, z, w];
   }

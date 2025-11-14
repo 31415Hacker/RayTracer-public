@@ -64,7 +64,7 @@ export class FPSCamera {
     document.addEventListener("mousemove", (e) => {
       if (!this.#plock) return;
       this.#yaw -= e.movementX * this.#sens;
-      this.#pitch += e.movementY * this.#sens;
+      this.#pitch -= e.movementY * this.#sens;
       this.#pitch = clamp(this.#pitch, -PITCH_CLAMP, PITCH_CLAMP);
     });
 

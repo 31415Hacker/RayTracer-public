@@ -1,133 +1,118 @@
-// ─────────────────────────────
-// BVH encoded as a flat float array
-// Each node = 6 floats: min.xyz, max.xyz
-// ─────────────────────────────
+// ─────────────────────────────────────────────
+// Parallel BVH Builder (Bottom-Up)
+// One thread per node
+// Leaves store triangle AABBs
+// Internal nodes merge child AABBs
+// ─────────────────────────────────────────────
+
 @group(0) @binding(0)
-var<storage, read_write> bvh : array<f32>;
+var<storage, read_write> bvh : array<f32>;    // [nodeMin.xyz, nodeMax.xyz] per node
 
 @group(0) @binding(1)
-var<storage, read> triangles : array<f32>;
+var<storage, read> triangles : array<f32>;    // triangle float array
 
-// ─────────────────────────────
-// Uniform buffer for global build parameters
-// ─────────────────────────────
-struct BuilderUBO {
-    numTriangles : u32,
-    maxDepth     : u32,
-    batchSize    : u32,   // ← new: how many nodes per thread
-    _pad         : u32,
-};
 @group(0) @binding(2)
-var<uniform> ubo : BuilderUBO;
+var<uniform> ubo : vec4<u32>; // x=numTris, y=maxDepth, z=batch, w=unused
 
-// ─────────────────────────────
-// Helpers
-// ─────────────────────────────
-fn getTriangle(i: u32) -> array<vec3<f32>, 3> {
-    let base = i * 9u;
-    return array<vec3<f32>, 3>(
-        vec3<f32>(triangles[base + 0u], triangles[base + 1u], triangles[base + 2u]),
-        vec3<f32>(triangles[base + 3u], triangles[base + 4u], triangles[base + 5u]),
-        vec3<f32>(triangles[base + 6u], triangles[base + 7u], triangles[base + 8u])
+
+// -----------------------------------------
+// Helper functions
+// -----------------------------------------
+
+fn writeNode(i: u32, mn: vec3<f32>, mx: vec3<f32>) {
+    let base = 1u + i*6u;
+    bvh[base+0u] = mn.x;
+    bvh[base+1u] = mn.y;
+    bvh[base+2u] = mn.z;
+    bvh[base+3u] = mx.x;
+    bvh[base+4u] = mx.y;
+    bvh[base+5u] = mx.z;
+}
+
+fn readNode(i: u32) -> array<vec3<f32>,2> {
+    let base = 1u + i*6u;
+    return array<vec3<f32>,2>(
+        vec3<f32>(bvh[base+0u], bvh[base+1u], bvh[base+2u]),
+        vec3<f32>(bvh[base+3u], bvh[base+4u], bvh[base+5u])
     );
 }
 
-fn writeNode(nodeIndex: u32, mn: vec3<f32>, mx: vec3<f32>) {
-    let base = nodeIndex * 6u;
-    bvh[base + 0u] = mn.x;
-    bvh[base + 1u] = mn.y;
-    bvh[base + 2u] = mn.z;
-    bvh[base + 3u] = mx.x;
-    bvh[base + 4u] = mx.y;
-    bvh[base + 5u] = mx.z;
+fn getTriangleBounds(ti: u32) -> array<vec3<f32>,2> {
+    let base = ti*9u;
+
+    var mn = vec3<f32>( 1e30);
+    var mx = vec3<f32>(-1e30);
+
+    for (var k = 0u; k < 3u; k++) {
+        let v = vec3<f32>(
+            triangles[base + k*3u + 0u],
+            triangles[base + k*3u + 1u],
+            triangles[base + k*3u + 2u]
+        );
+        mn = min(mn, v);
+        mx = max(mx, v);
+    }
+
+    return array<vec3<f32>,2>(mn, mx);
 }
 
-fn readNode(nodeIndex: u32) -> array<vec3<f32>, 2> {
-    let base = nodeIndex * 6u;
-    return array<vec3<f32>, 2>(
-        vec3<f32>(bvh[base + 0u], bvh[base + 1u], bvh[base + 2u]),
-        vec3<f32>(bvh[base + 3u], bvh[base + 4u], bvh[base + 5u])
-    );
-}
 
-fn leftChild(i: u32) -> u32 { return 2u * i + 1u; }
-fn rightChild(i: u32) -> u32 { return 2u * i + 2u; }
+// -----------------------------------------
+// MAIN ENTRY – fully parallel
+// -----------------------------------------
 
-// ─────────────────────────────
-// Compute Entry
-// ─────────────────────────────
-@compute @workgroup_size(1)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let batchSize = ubo.batchSize;
-    let threadBase = gid.x * batchSize;
+@compute @workgroup_size(128)
+fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
 
-    // Only thread 0 builds the root (once)
+    let numTris = ubo.x;
+    let maxDepth = ubo.y;
+
+    let totalNodes = (1u << (maxDepth+1u)) - 1u;
+    let leafStart  = (1u << maxDepth) - 1u;
+    let numLeaves  = 1u << maxDepth;
+
     if (gid.x == 0u) {
-        var globalMin = vec3<f32>( 1e20);
-        var globalMax = vec3<f32>(-1e20);
-
-        for (var i = 0u; i < ubo.numTriangles; i = i + 1u) {
-            let tri = getTriangle(i);
-            for (var v = 0u; v < 3u; v = v + 1u) {
-                globalMin = min(globalMin, tri[v]);
-                globalMax = max(globalMax, tri[v]);
-            }
-        }
-        writeNode(0u, globalMin, globalMax);
+        // store metadata count
+        bvh[0] = f32(totalNodes);
     }
 
-    workgroupBarrier();
-
-    // ─────────────────────────────
-    // Breadth-first subdivision (batched)
-    // ─────────────────────────────
-    let maxDepth = ubo.maxDepth;
-
-    var currentLevelStart: u32 = 0u;
-    var currentLevelEnd:   u32 = 1u; // root only
-
-    for (var level = 0u; level < maxDepth; level = level + 1u) {
-        let nextLevelStart = currentLevelEnd;
-        let nextLevelEnd   = nextLevelStart + (currentLevelEnd - currentLevelStart) * 2u;
-        let numNodes       = currentLevelEnd - currentLevelStart;
-
-        // Process nodes in batches
-        for (var j = 0u; j < batchSize; j = j + 1u) {
-            let nodeIndex = currentLevelStart + threadBase + j;
-            if (nodeIndex >= currentLevelEnd) { break; }
-
-            let node = readNode(nodeIndex);
-            let pMin = node[0];
-            let pMax = node[1];
-            let extent = pMax - pMin;
-
-            // Split along longest axis
-            var axis: u32 = 0u;
-            if (extent.y > extent.x && extent.y > extent.z) {
-                axis = 1u;
-            } else if (extent.z > extent.x) {
-                axis = 2u;
-            }
-
-            let mid = pMin[axis] + 0.5 * extent[axis];
-
-            // Left child
-            var lMin = pMin;
-            var lMax = pMax;
-            lMax[axis] = mid;
-
-            // Right child
-            var rMin = pMin;
-            var rMax = pMax;
-            rMin[axis] = mid;
-
-            writeNode(leftChild(nodeIndex),  lMin, lMax);
-            writeNode(rightChild(nodeIndex), rMin, rMax);
-        }
-
-        workgroupBarrier();
-
-        currentLevelStart = nextLevelStart;
-        currentLevelEnd   = nextLevelEnd;
+    if (gid.x >= totalNodes) {
+        return;
     }
+
+    // -----------------------------------------
+    // 1) LEAF NODES (parallel)
+    // -----------------------------------------
+    if (gid.x >= leafStart) {
+        let leafIdx = gid.x - leafStart;
+
+        if (leafIdx < numTris) {
+            let ab = getTriangleBounds(leafIdx);
+            writeNode(gid.x, ab[0], ab[1]);
+        } else {
+            // Empty leaf bbox
+            writeNode(gid.x,
+                vec3<f32>( 1e30),
+                vec3<f32>(-1e30)
+            );
+        }
+        return;
+    }
+
+    // -----------------------------------------
+    // 2) INTERNAL NODES (parallel)
+    // -----------------------------------------
+
+    // children indices
+    let left  = gid.x*2u + 1u;
+    let right = gid.x*2u + 2u;
+
+    // merge AABBs
+    let L = readNode(left);
+    let R = readNode(right);
+
+    let mn = min(L[0], R[0]);
+    let mx = max(L[1], R[1]);
+
+    writeNode(gid.x, mn, mx);
 }

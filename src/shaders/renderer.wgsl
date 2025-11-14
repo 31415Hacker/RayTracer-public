@@ -5,6 +5,7 @@ struct UBO {
     resolution: vec4<f32>,
     camPosNumTris: vec4<f32>,   // xyz = position, w = numTris
     camQuat: vec4<f32>,         // xyzw = quaternion
+    nodes: vec4<f32>,          // x = numNodes, yzw = padding
 };
 
 struct Ray {
@@ -125,7 +126,7 @@ fn intersectRayTriangle(rayOrigin: vec3<f32>, rayDir: vec3<f32>, tri: Triangle) 
 fn traverseBVH(ray: Ray, numNodes: u32, numTris: u32) -> i32 {
     var stack: array<u32, 64>;
     var stackPtr: i32 = 0;
-    stack[0] = 0u; // root node index
+    stack[0] = 0u;
 
     var closestTri = -1;
     var minT = 1e20;
@@ -142,22 +143,29 @@ fn traverseBVH(ray: Ray, numNodes: u32, numTris: u32) -> i32 {
             continue;
         }
 
-        // Leaf heuristic: assume bottom half of BVH are leaves
-        if (nodeIndex >= numNodes / 2u) {
-            let triIndex = nodeIndex - numNodes / 2u;
-            if (triIndex < numTris) {
-                let tri = getTriangle(triIndex);
-                let t = intersectRayTriangle(ray.origin, ray.direction, tri);
-                if (t > 0.0 && t < minT) {
-                    minT = t;
-                    closestTri = i32(triIndex);
+        // compute child indices
+        let left  = nodeIndex * 2u + 1u;
+        let right = nodeIndex * 2u + 2u;
+
+        // leaf detection: both children out of range
+        let isLeaf = (left >= numNodes) && (right >= numNodes);
+
+        if (isLeaf) {
+            // Brute-force over triangles (OK while numTris is small)
+            for (var i: u32 = 0u; i < numTris; i = i + 1u) {
+                let tri = getTriangle(i);
+                let c = (tri.v0 + tri.v1 + tri.v2) / 3.0;
+
+                if (all(c >= node.min) && all(c <= node.max)) {
+                    let t = intersectRayTriangle(ray.origin, ray.direction, tri);
+                    if (t > 0.0 && t < minT) {
+                        minT = t;
+                        closestTri = i32(i);
+                    }
                 }
             }
         } else {
-            // Push children (binary layout)
-            let left = nodeIndex * 2u + 1u;
-            let right = nodeIndex * 2u + 2u;
-
+            // push valid children
             if (right < numNodes) {
                 stackPtr += 1;
                 stack[stackPtr] = right;
@@ -206,10 +214,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let dir = normalize(forward + ndc.x * right + ndc.y * up);
     let ray = Ray(camPos, dir, 1.0 / dir);
 
-    let lightDir = normalize(vec3<f32>(0.8, 0.5, -1.0));
+    let lightDir = normalize(vec3<f32>(-0.8, -0.5, 1.0));
 
     let numTris = u32(ubo.camPosNumTris.w);
-    let numNodes = 11u; // adjust as needed or pass via UBO
+    let numNodes = u32(ubo.nodes.x); // adjust as needed or pass via UBO
 
     let hitTri = traverseBVH(ray, numNodes, numTris);
 
@@ -220,8 +228,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let diffuse = shade(n, lightDir);
         color = vec3<f32>(1.0, 1.0, 1.0) * diffuse;
     } else {
-        let bg = 0.5 * (dir.y + 1.0);
-        color = mix(vec3<f32>(0.2, 0.3, 0.5), vec3<f32>(0.8, 0.9, 1.0), bg);
+        color = vec3(0.0, 0.0, 0.0);
     }
 
     textureStore(outputTexture, pixelCoord, vec4<f32>(color, 1.0));
