@@ -189,46 +189,61 @@ fn traverseBVH(ray: Ray, numNodes: u32, numTris: u32) -> i32 {
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let pixelCoord = vec2<i32>(gid.xy);
     let resolution = ubo.resolution.xy;
+
+    // Guard: pixel outside viewport
     if (pixelCoord.x >= i32(resolution.x) || pixelCoord.y >= i32(resolution.y)) {
         return;
     }
 
+    // Screen / camera setup
     let aspect = resolution.x / resolution.y;
+    let fov = radians(70.0);
+    let focal = 1.0 / tan(fov * 0.5);
 
-    // Normalized pixel coordinate [0,1]
-    let uv = vec2<f32>(f32(pixelCoord.x), f32(pixelCoord.y)) / resolution;
-
-    // NDC [-1,1]
-    let ndc = vec2<f32>(
-        (uv.x * 2.0 - 1.0) * aspect,
-        1.0 - uv.y * 2.0
+    // Normalized pixel coord [0..1]
+    let uv = vec2<f32>(
+        f32(pixelCoord.x) / resolution.x,
+        f32(pixelCoord.y) / resolution.y
     );
 
-    // Camera setup
-    let camPos = ubo.camPosNumTris.xyz;
-    let camQuat = ubo.camQuat;
-    let forward = rotateVectorByQuat(vec3<f32>(0.0, 0.0, -1.0), camQuat);
-    let right = rotateVectorByQuat(vec3<f32>(1.0, 0.0, 0.0), camQuat);
-    let up = rotateVectorByQuat(vec3<f32>(0.0, 1.0, 0.0), camQuat);
+    // Convert to NDC [-1..1]
+    let px = uv.x * 2.0 - 1.0;
+    let py = uv.y * 2.0 - 1.0;   // Y-flip for screen space
 
-    let dir = normalize(forward + ndc.x * right + ndc.y * up);
+    // Camera-space ray direction (THREE.js perspective)
+    let dirCamera = normalize(vec3<f32>(
+        px * aspect,
+        py,
+        -focal                    // THREE.js looks down -Z
+    ));
+
+    // Rotate by camera quaternion
+    let camQuat = ubo.camQuat;
+    var dir = rotateVectorByQuat(dirCamera, camQuat);
+
+    // Build ray
+    let camPos = ubo.camPosNumTris.xyz;
     let ray = Ray(camPos, dir, 1.0 / dir);
 
-    let lightDir = normalize(vec3<f32>(-0.8, -0.5, 1.0));
+    // Lighting
+    let lightDir = normalize(vec3<f32>(-0.8, 0.5, 1.0));
 
+    // BVH info
     let numTris = u32(ubo.camPosNumTris.w);
-    let numNodes = u32(ubo.nodes.x); // adjust as needed or pass via UBO
+    let numNodes = u32(ubo.nodes.x);
 
+    // BVH traversal
     let hitTri = traverseBVH(ray, numNodes, numTris);
 
+    // Shading
     var color: vec3<f32>;
     if (hitTri >= 0) {
         let tri = getTriangle(u32(hitTri));
         let n = normalize(cross(tri.v1 - tri.v0, tri.v2 - tri.v0));
         let diffuse = shade(n, lightDir);
-        color = vec3<f32>(1.0, 1.0, 1.0) * diffuse;
+        color = diffuse;
     } else {
-        color = vec3(0.0, 0.0, 0.0);
+        color = vec3<f32>(0.0, 0.0, 0.0);
     }
 
     textureStore(outputTexture, pixelCoord, vec4<f32>(color, 1.0));

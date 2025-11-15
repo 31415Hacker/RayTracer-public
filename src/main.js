@@ -1,7 +1,9 @@
 import { PathTracer } from "./libs/PathTracer.js";
 import { FPSCamera } from "./libs/controls/input-handler.js";
 
-const canvas = document.getElementById('c');
+const FPSCounter = document.getElementById("fps");
+
+const canvas = document.getElementById("c");
 const pathTracer = new PathTracer(canvas);
 const FPScamera = new FPSCamera({
     canvas,
@@ -11,14 +13,25 @@ const FPScamera = new FPSCamera({
 
 await pathTracer.initialize();
 
-let lastTime = performance.now();
+let lastFrame = performance.now();
+let fpsTimer = performance.now();
+let frameCount = 0;
 
 async function main() {
+
     const now = performance.now();
-    const dt = (now - lastTime) / 1000;
-    lastTime = now;
+    const dt = (now - lastFrame) / 1000;
+    lastFrame = now;
 
     FPScamera.update(dt);
+
+    // Update FPS once per second
+    frameCount++;
+    if (now - fpsTimer >= 1000) {
+        FPSCounter.innerText = frameCount + " FPS";
+        frameCount = 0;
+        fpsTimer = now;
+    }
 
     const camPos = FPScamera.position;
     const camQuat = FPScamera.rotation;
@@ -27,7 +40,8 @@ async function main() {
     pathTracer.setCameraQuaternion(...camQuat);
 
     await pathTracer.render();
+
     requestAnimationFrame(main);
 }
 
-await main();
+main();
