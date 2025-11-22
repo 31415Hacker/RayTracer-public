@@ -1,10 +1,11 @@
-import { PathTracer } from "./libs/PathTracer.js";
+import * as PT from "./libs/PathTracer.js";
+import * as PTScene from "./libs/Scene.js";
 import { FPSCamera } from "./libs/controls/input-handler.js";
 
 const FPSCounter = document.getElementById("fps");
 
 const canvas = document.getElementById("c");
-const pathTracer = new PathTracer(canvas);
+const pathTracer = new PT.PathTracer(canvas);
 const FPScamera = new FPSCamera({
     canvas,
     position: [0, 0, 2.5],
@@ -12,6 +13,10 @@ const FPScamera = new FPSCamera({
 });
 
 await pathTracer.initialize();
+
+const scene = new PTScene.Scene();
+await scene.loadGLB('/assets/steve.glb');
+await pathTracer.setScene(scene);
 
 let lastFrame = performance.now();
 let fpsTimer = performance.now();

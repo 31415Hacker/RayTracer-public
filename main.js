@@ -1,6 +1,7 @@
 import { PathTracer } from "./src/libs/PathTracer.js";
 import { FPSCamera } from "./src/libs/controls/input-handler.js";
 import * as THREE from "three";
+import * as PTScene from "./src/libs/Scene.js";
 
 window.addEventListener("DOMContentLoaded", async () => {
     /* ==========================================================
@@ -35,6 +36,10 @@ window.addEventListener("DOMContentLoaded", async () => {
 
     await tracer.initialize();
 
+    const ptscene = new PTScene.Scene();
+    await ptscene.loadGLB('/assets/dodecahedron.glb');
+    tracer.setScene(ptscene);
+
     /* ==========================================================
     THREE.JS FOR BVH + CUBE WIREFRAME
     ========================================================== */
@@ -58,17 +63,6 @@ window.addEventListener("DOMContentLoaded", async () => {
     // Group for BVH boxes
     const boxGroup = new THREE.Group();
     scene.add(boxGroup);
-
-    /* ----------------------------------------------------------
-    ADD: Cube Wireframe (the actual cube edges you expected)
-    ---------------------------------------------------------- */
-    {
-        const cubeGeo = new THREE.BoxGeometry(2, 2, 2);
-        const wireGeo = new THREE.WireframeGeometry(cubeGeo);
-        const wireMat = new THREE.LineBasicMaterial({ color: 0xffffff });
-        const wire = new THREE.LineSegments(wireGeo, wireMat);
-        scene.add(wire);
-    }
 
     /* ==========================================================
     BVH BOX UPDATE FUNCTION

@@ -41,7 +41,7 @@ export class FPSCamera {
   constructor({
     canvas,
     position = [0, 1.6, 5],
-    moveSpeed = 4.0,
+    moveSpeed = 40.0,
     sprintMult = 2.5,
     lookSensitivity = 0.002,
     fly = true, // NEW: choose camera-space vs ground-walk
