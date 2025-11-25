@@ -37,7 +37,10 @@ window.addEventListener("DOMContentLoaded", async () => {
     await tracer.initialize();
 
     const ptscene = new PTScene.Scene();
-    await ptscene.loadGLB('/assets/dodecahedron.glb');
+    await ptscene.loadGLB('/assets/steve.glb', {
+        normalize: true,
+        mode: "cube"
+    });
     tracer.setScene(ptscene);
 
     /* ==========================================================
@@ -74,7 +77,7 @@ window.addEventListener("DOMContentLoaded", async () => {
         const numNodes = bvhArray[0];
 
         for (let i = 0; i < numNodes; i++) {
-            const base = 1 + i * 6;
+            const base = 1 + i * 8;
             const mn = new THREE.Vector3(
                 bvhArray[base + 0],
                 bvhArray[base + 1],

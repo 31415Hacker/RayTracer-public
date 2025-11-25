@@ -77,14 +77,36 @@ npm run preview
 ## **Project Structure**
 
 ```
-/src
- ├── PathTracer.js         # Core class controlling GPU setup & rendering
- ├── shaders/
- │    ├── BVHBuilder.wgsl  # GPU BVH construction
- │    ├── renderer.wgsl    # Ray tracing compute shader
- │    └── tonemapper.wgsl  # Final tone-mapping pipeline
- ├── io.js                 # Async file loading helpers
- └── main.js               # Demo scaffolding & scene loading
+.
+├── README.md
+├── debug.html
+├── index.html
+├── jsconfig.json
+├── main.js
+├── package-lock.json
+├── package.json
+├── public
+│   ├── app
+│   │   └── styles.css
+│   └── assets
+│       ├── dodecahedron.glb
+│       ├── plane.glb
+│       └── steve.glb
+├── src
+│   ├── libs
+│   │   ├── PathTracer.js
+│   │   ├── Scene.js
+│   │   ├── controls
+│   │   │   └── input-handler.js
+│   │   └── io.js
+│   ├── main.js
+│   ├── server
+│   │   └── server.js
+│   └── shaders
+│       ├── BVHBuilder.wgsl
+│       ├── renderer.wgsl
+│       └── tonemapper.wgsl
+└── vite.config.js
 ```
 
 ---
@@ -114,7 +136,7 @@ The builder:
 The BVH buffer is tightly sized using:
 
 ```js
-(numNodes * 6 + 1) floats
+(numNodes * 8 + 1) floats
 ```
 
 as defined in the code.
@@ -154,7 +176,7 @@ tracer.setCameraQuaternion(0, 0.707, 0, 0.707);
 ## **Design Philosophy**
 
 * **Everything GPU-first**:
-  CPU only loads files and triggers commands.
+  CPU only loads files and triggers commands, and the GPU does everything else (rendering, building the BVH).
 * **Extensibility**:
   Easily add materials, BRDFs, MIS, ReSTIR, or sampling strategies.
 * **Separation of concerns**:

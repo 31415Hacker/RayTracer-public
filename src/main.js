@@ -15,7 +15,10 @@ const FPScamera = new FPSCamera({
 await pathTracer.initialize();
 
 const scene = new PTScene.Scene();
-await scene.loadGLB('/assets/steve.glb');
+await scene.loadGLB('/assets/plane.glb', {
+    normalize: true,
+    mode: "cube"
+});
 await pathTracer.setScene(scene);
 
 let lastFrame = performance.now();

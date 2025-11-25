@@ -37,5 +37,5 @@ fn fmain(in: VSOutput) -> @location(0) vec4<f32> {
     let color = pow(mapped, vec3<f32>(gamma));
 
     // Output final color to the canvas
-    return vec4<f32>(color, 1.0);
+    return vec4<f32>(hdrColor.rgb, 1.0);
 }
