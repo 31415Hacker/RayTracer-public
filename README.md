@@ -13,6 +13,10 @@ A modern, modular **WebGPU-based path tracing engine** featuring a fully GPU-acc
 * Exact-size BVH buffer allocation based on depth.
   *(Computed using `computeBVHSizing` in `PathTracer.js`.)*
 
+Formula for BVH buffer allocation:
+```
+1 + 8 * nodes
+```
 
 ### **Compute Shader Ray Tracing**
 
@@ -26,9 +30,9 @@ The system uses three GPU pipelines:
 
 | Stage                       | Shader            | Purpose                                         |
 | --------------------------- | ----------------- | ----------------------------------------------- |
-| **1. BVH Builder**          | `BVHBuilder.wgsl` | Builds hierarchy top-down on the GPU            |
-| **2. Ray Tracing Renderer** | `renderer.wgsl`   | Generates rays, traverses BVH, computes shading |
-| **3. Tonemapper**           | `tonemapper.wgsl` | Converts raw output to final display            |
+| **BVH Builder**          | `BVHBuilder.wgsl` | Builds hierarchy top-down on the GPU            |
+| **Ray Tracing Renderer** | `renderer.wgsl`   | Generates rays, traverses BVH, computes shading |
+| **Tonemapper**           | `tonemapper.wgsl` | Converts raw output to final display            |
 
 ### **Mesh Support**
 
@@ -129,7 +133,7 @@ await tracer.buildBVH(triangleData);
 The builder:
 
 1. Uploads triangles
-2. Writes the Builder UBO (triangle count, max depth, batch size)
+2. Writes the **Builder UBO** (triangle count, max depth, batch size)
 3. Dispatches compute passes
 4. Finalizes BVH buffer
 
@@ -146,7 +150,7 @@ as defined in the code.
 
 Each frame:
 
-* Renderer UBO is updated with camera position, quaternion, resolution, triangle count, BVH node count
+* The **Renderer UBO** is updated with camera position, quaternion, resolution, triangle count, BVH node count
 * Compute pass performs ray traversal
 * Tonemapper draws the final full-screen triangle to the canvas
 
@@ -191,7 +195,7 @@ tracer.setCameraQuaternion(0, 0.707, 0, 0.707);
 * [ ] Add reflections and refractions
 * [ ] Add multi-bounce GI
 * [ ] Add Mesh transforms
-* [ ] Add BVH debugging visualizer
+* [x] Add BVH debugging visualizer
 * [ ] Add OBJ/PLY support
 * [ ] Add full scene materials + textures
 

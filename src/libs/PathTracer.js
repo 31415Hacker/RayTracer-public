@@ -15,7 +15,7 @@ export class PathTracer {
     this.cameraQuaternion = [0.0, 0.0, 0.0, 1.0];
 
     // 8-ary BVH config
-    // Depth 6 → capacity 8^6 = 2,097,152 triangles (moderate-high scenes)
+    // Depth 7 → capacity 8^6 = 2,097,152 triangles (moderate-high scenes)
     this.maxDepth = 7;
 
     this.numNodes = 0;
