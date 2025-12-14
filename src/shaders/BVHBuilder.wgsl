@@ -18,7 +18,7 @@
 // ─────────────────────────────────────────────
 
 @group(0) @binding(0)
-var<storage, read_write> bvh : array<f32>;
+var<storage, read_write> bvh : array<u32>;
 
 @group(0) @binding(1)
 var<storage, read> triangles : array<f32>;
@@ -113,25 +113,21 @@ fn getNodeTriRange(node: u32, numTris: u32, maxDepth: u32) -> vec2<u32> {
 }
 
 // Write one node into the flattened BVH buffer
-fn writeNode(
-    i: u32,
-    mn: vec3<f32>,
-    mx: vec3<f32>,
-    firstTri: u32,
-    triCount: u32
-) {
-    let base = 1u + i * 8u;
+fn writeNode(i: u32, mn: vec3<f32>, mx: vec3<f32>, firstTri: u32, triCount: u32) {
+    let base = 1u + i * 4u;
 
-    bvh[base + 0u] = mn.x;
-    bvh[base + 1u] = mn.y;
-    bvh[base + 2u] = mn.z;
+    let eps = 8e-4;
 
-    bvh[base + 3u] = mx.x;
-    bvh[base + 4u] = mx.y;
-    bvh[base + 5u] = mx.z;
+    let mnL = mn - eps;
+    let mxL = mx + eps;
 
-    bvh[base + 6u] = f32(firstTri);
-    bvh[base + 7u] = f32(triCount);
+    // FP16 bounds packing (6 values → 3 floats)
+    bvh[base + 0u] = pack2x16float(vec2(mnL.x, mnL.y));
+    bvh[base + 1u] = pack2x16float(vec2(mnL.z, mxL.x));
+    bvh[base + 2u] = pack2x16float(vec2(mxL.y, mxL.z));
+
+    // metadata
+    bvh[base + 3u] = (firstTri << 3u) | (triCount & 0x7u);
 }
 
 // -----------------------------------------
@@ -148,11 +144,6 @@ fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
 
     if (node >= totalNodes) {
         return;
-    }
-
-    // First thread writes metadata once: total node count
-    if (gid.x == 0u) {
-        bvh[0u] = f32(totalNodes);
     }
 
     let triRange = getNodeTriRange(node, numTris, maxDepth);

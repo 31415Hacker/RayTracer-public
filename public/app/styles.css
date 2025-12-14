@@ -4,6 +4,7 @@ body {
   padding: 0;
   height: 100%;
   background: #0b0d12;
+  overflow: hidden;
   color: #cfd8e3;
   font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
 }
@@ -19,11 +20,11 @@ canvas {
   top: 10px; right: 12px;
   padding: 6px 10px;
   border-radius: 10px;
-  border: 1px solid #1f2430;
+  border: 1px solid #169004;
   background: rgba(0,0,0,.55);
   backdrop-filter: blur(4px);
   font: 600 12px/1.2 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  color: #e5f2ff;
+  color: #0be512;
   pointer-events: none;
   user-select: none;
   letter-spacing: .2px;

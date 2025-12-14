@@ -43,7 +43,7 @@ export class PathTracer {
     const pow8Next = Math.pow(8, maxDepth + 1);
     const numNodes = Math.floor((pow8Next - 1) / 7);
 
-    const bvhFloats = 1 + numNodes * 8; // 1 metadata + 8 per node
+    const bvhFloats = 1 + numNodes * 4; // 1 metadata + 4 per node
     const bvhSizeBytes = bvhFloats * 4;
 
     return { numNodes, bvhFloats, bvhSizeBytes };
@@ -353,7 +353,7 @@ export class PathTracer {
     device.queue.writeBuffer(
       this.buffers.BVH,
       0,
-      new Float32Array([this.numNodes])
+      new Uint32Array([this.numNodes])
     );
 
     if (numTriangles === 0) {
@@ -406,7 +406,7 @@ export class PathTracer {
     this.device.queue.submit([cmd.finish()]);
 
     await readBuffer.mapAsync(GPUMapMode.READ);
-    const arr = new Float32Array(readBuffer.getMappedRange().slice(0));
+    const arr = new Uint32Array(readBuffer.getMappedRange().slice(0));
     readBuffer.unmap();
     return arr;
   }
@@ -444,12 +444,6 @@ export class PathTracer {
       this.cameraQuaternion[1],
       this.cameraQuaternion[2],
       this.cameraQuaternion[3],
-
-      // numNodes + depth (node count also lives in BVH[0])
-      this.numNodes,
-      depthUsed,
-      0,
-      0,
     ]);
 
     this.device.queue.writeBuffer(this.buffers.rendererUBO, 0, UBO);
@@ -463,7 +457,7 @@ export class PathTracer {
     const wgX = Math.ceil(this.canvas.width / 16);
     const wgY = Math.ceil(this.canvas.height / 16);
     pass.dispatchWorkgroups(wgX, wgY);
-    console.log(`Dispatching Renderer: ${wgX * wgY} workgroups`);
+    console.log(`Dispatching Renderer: ${wgX * wgY} workgroups, ${wgX * wgY * 256} threads`);
     pass.end();
 
     // Tonemap to swapchain

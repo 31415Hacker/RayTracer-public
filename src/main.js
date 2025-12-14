@@ -15,7 +15,7 @@ const FPScamera = new FPSCamera({
 await pathTracer.initialize();
 
 const scene = new PTScene.Scene();
-await scene.loadGLB('/assets/plane.glb', {
+await scene.loadGLB('/assets/dragon.glb', {
     normalize: true,
     mode: "cube"
 });
@@ -25,15 +25,15 @@ let lastFrame = performance.now();
 let fpsTimer = performance.now();
 let frameCount = 0;
 
-async function main() {
+let dumped = false;
 
+async function main() {
     const now = performance.now();
     const dt = (now - lastFrame) / 1000;
     lastFrame = now;
 
     FPScamera.update(dt);
 
-    // Update FPS once per second
     frameCount++;
     if (now - fpsTimer >= 1000) {
         FPSCounter.innerText = frameCount + " FPS";
@@ -41,13 +41,28 @@ async function main() {
         fpsTimer = now;
     }
 
-    const camPos = FPScamera.position;
-    const camQuat = FPScamera.rotation;
-
-    pathTracer.setCameraPosition(...camPos);
-    pathTracer.setCameraQuaternion(...camQuat);
+    pathTracer.setCameraPosition(...FPScamera.position);
+    pathTracer.setCameraQuaternion(...FPScamera.rotation);
 
     await pathTracer.render();
+
+    if (!dumped) {
+        const BVH = await pathTracer.readBVH();
+
+        const dump = BVH.slice(0, 1 + 1000 * 4);
+
+        await fetch("http://localhost:3000/api/write", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                filename: "BVH_first_1000_nodes.json",
+                content: JSON.stringify(Array.from(dump), null, 2)
+            })
+        });
+
+        dumped = true;
+        console.log("BVH dump written (first 1000 nodes)");
+    }
 
     requestAnimationFrame(main);
 }
