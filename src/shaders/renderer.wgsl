@@ -160,7 +160,7 @@ fn traverseBVH(ray: Ray, numTris: u32) -> Hit {
         return Hit(0.0, vec3(0.0), false);
     }
 
-    var stack: array<u32, 64>;
+    var stack: array<u32, 32>;
     var sp: i32 = 0;
     stack[0] = 0u;
 
@@ -202,14 +202,14 @@ fn traverseBVH(ray: Ray, numTris: u32) -> Hit {
             }
         }
         else {
-            let firstChild = nodeIndex * 8u + 1u;
+            let firstChild = nodeIndex * 4u + 1u;
 
-            for (var c = 0u; c < 8u; c++) {
+            for (var c = 0u; c < 4u; c++) {
                 let ci = firstChild + c;
                 if (ci < numNodes) {
                     let child = getBVHNode(ci);
                     let d = intersectAABB(ray, child.min, child.max, closestT);
-                    if (d < 1e30 && sp < 63) {
+                    if (d < 1e30 && sp < 31) {
                         sp++;
                         stack[u32(sp)] = ci;
                     }

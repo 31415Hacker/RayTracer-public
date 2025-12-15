@@ -1,18 +1,18 @@
 // ─────────────────────────────────────────────
-// BVH8 Builder with explicit leaf triangle ranges
+// BVH4 Builder with explicit leaf triangle ranges
 // Layout in bvh buffer:
 //
 //   bvh[0] = totalNodes (as f32)
 //   For node i:
-//     base = 1u + i * 8u
+//     base = 1u + i * 4u
 //     [base + 0..2] = min.xyz
 //     [base + 3..5] = max.xyz
 //     [base + 6]    = f32(firstTri)
 //     [base + 7]    = f32(triCount)
 //
-// Children are implicit in perfect 8-ary heap layout:
-//   children of node i are at indices i*8+1 .. i*8+8
-//   totalNodes = (8^(maxDepth+1) - 1) / 7
+// Children are implicit in perfect 4-ary heap layout:
+//   children of node i are at indices i*4+1 .. i*4+4
+//   totalNodes = (4^(maxDepth+1) - 1) / 3
 // Leaves are at depth = maxDepth.
 // Triangles are evenly mapped onto leaves in contiguous ranges.
 // ─────────────────────────────────────────────
@@ -30,10 +30,10 @@ var<uniform> ubo : vec4<u32>; // x = numTris, y = maxDepth, z,w unused
 // Helpers
 // -----------------------------------------
 
-fn pow8(exp: u32) -> u32 {
+fn pow4(exp: u32) -> u32 {
     var r = 1u;
     for (var i = 0u; i < exp; i = i + 1u) {
-        r = r * 8u;
+        r = r * 4u;
     }
     return r;
 }
@@ -63,17 +63,17 @@ fn getTriangleBounds(ti: u32) -> array<vec3<f32>, 2u> {
     return array<vec3<f32>, 2u>(mn, mx);
 }
 
-// Heap-style depth for 8-ary tree
+// Heap-style depth for 4-ary tree
 fn nodeDepth(node: u32) -> u32 {
     if (node == 0u) {
         return 0u;
     }
-    let val = f32(7u * node + 1u);
-    let log8 = log2(val) / 3.0;
-    return u32(floor(log8));
+    let val = f32(3u * node + 1u);
+    let log4 = log2(val) / 2.0;
+    return u32(floor(log4));
 }
 
-// Map a node index → [startTri, endTri) using a perfect 8-ary tree
+// Map a node index → [startTri, endTri) using a perfect 4-ary tree
 // with leaves at depth = maxDepth, triangles distributed contiguously.
 fn getNodeTriRange(node: u32, numTris: u32, maxDepth: u32) -> vec2<u32> {
     let depth = nodeDepth(node);
@@ -82,11 +82,11 @@ fn getNodeTriRange(node: u32, numTris: u32, maxDepth: u32) -> vec2<u32> {
     }
 
     // First node index at this depth
-    let startNodeAtDepth = (pow8(depth) - 1u) / 7u;
+    let startNodeAtDepth = (pow4(depth) - 1u) / 3u;
     let nodeOffset = node - startNodeAtDepth;
 
-    let totalLeaves   = pow8(maxDepth);
-    let leavesPerNode = pow8(maxDepth - depth);
+    let totalLeaves   = pow4(maxDepth);
+    let leavesPerNode = pow4(maxDepth - depth);
 
     var leafStartIdx = nodeOffset * leavesPerNode;
     var leafEndIdx   = leafStartIdx + leavesPerNode;
@@ -116,7 +116,7 @@ fn getNodeTriRange(node: u32, numTris: u32, maxDepth: u32) -> vec2<u32> {
 fn writeNode(i: u32, mn: vec3<f32>, mx: vec3<f32>, firstTri: u32, triCount: u32) {
     let base = 1u + i * 4u;
 
-    let eps = 8e-4;
+    let eps = 1e-3;
 
     let mnL = mn - eps;
     let mxL = mx + eps;
@@ -138,8 +138,8 @@ fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
     let numTris  = ubo.x;
     let maxDepth = ubo.y;
 
-    // Perfect 8-ary heap node count: 1 + 8 + 8^2 + ... + 8^maxDepth
-    let totalNodes = (pow8(maxDepth + 1u) - 1u) / 7u;
+    // Perfect 4-ary heap node count: 1 + 4 + 4^2 + ... + 4^maxDepth
+    let totalNodes = (pow4(maxDepth + 1u) - 1u) / 3u;
     let node = gid.x;
 
     if (node >= totalNodes) {

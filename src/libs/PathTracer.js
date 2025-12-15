@@ -14,9 +14,9 @@ export class PathTracer {
     this.cameraPosition = [0.0, 0.0, 3.5];
     this.cameraQuaternion = [0.0, 0.0, 0.0, 1.0];
 
-    // 8-ary BVH config
-    // Depth 7 → capacity 8^6 = 2,097,152 triangles (moderate-high scenes)
-    this.maxDepth = 7;
+    // 4-ary BVH config
+    // Depth 12 → capacity 4^12 = 16,777,216 triangles (high scenes)
+    this.maxDepth = 12;
 
     this.numNodes = 0;
     this.bvhFloats = 0;
@@ -38,10 +38,10 @@ export class PathTracer {
     ]);
   }
 
-  // Sizing for perfect 8-ary tree: totalNodes = (8^(d+1) − 1) / 7
+  // Sizing for perfect 4-ary tree: totalNodes = (4^(d+1) − 1) / 3
   computeBVHSizing(maxDepth) {
-    const pow8Next = Math.pow(8, maxDepth + 1);
-    const numNodes = Math.floor((pow8Next - 1) / 7);
+    const pow4Next = Math.pow(4, maxDepth + 1);
+    const numNodes = Math.floor((pow4Next - 1) / 3);
 
     const bvhFloats = 1 + numNodes * 4; // 1 metadata + 4 per node
     const bvhSizeBytes = bvhFloats * 4;
@@ -321,18 +321,18 @@ export class PathTracer {
     const numTriangles = trianglesData.length / 9;
     const maxDepth = this.maxDepth;
 
-    // smallest depth such that 8^depth >= numTriangles (capped by maxDepth)
+    // smallest depth such that 4^depth >= numTriangles (capped by maxDepth)
     let depthUsed = 0;
     let capacity = 1;
     while (capacity < numTriangles && depthUsed < maxDepth) {
       depthUsed += 1;
-      capacity *= 8;
+      capacity *= 4;
     }
 
     this.currentDepth = depthUsed;
 
     console.log(
-      `Building BVH8: ${numTriangles} tris, Depth ${depthUsed} (Capacity: ${capacity})`
+      `Building BVH4: ${numTriangles} tris, Depth ${depthUsed} (Capacity: ${capacity})`
     );
 
     // allocate BVH buffer for exactly this depth

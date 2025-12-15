@@ -15,7 +15,7 @@ A modern, modular **WebGPU-based path tracing engine** featuring a fully GPU-acc
 
 Formula for BVH buffer allocation:
 ```
-1 + 8 * nodes
+1 + 4 * nodes
 ```
 
 ### **Compute Shader Ray Tracing**
@@ -140,7 +140,7 @@ The builder:
 The BVH buffer is tightly sized using:
 
 ```js
-(numNodes * 8 + 1) floats
+(numNodes * 4 + 1) floats
 ```
 
 as defined in the code.
