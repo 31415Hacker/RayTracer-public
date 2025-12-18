@@ -98,8 +98,11 @@ export class PathTracer {
         size: 256,
         usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
       }),
+      debug: this.device.createBuffer({
+        size: 16 * MB,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+      }),
       triangles: this.device.createBuffer({
-        // 32 MB triangle pool – JS side enforces not to overflow this
         size: 32 * MB,
         usage:
           GPUBufferUsage.STORAGE |
@@ -215,6 +218,11 @@ export class PathTracer {
             visibility: GPUShaderStage.COMPUTE,
             buffer: { type: "read-only-storage" },
           },
+          {
+            binding: 4,
+            visibility: GPUShaderStage.COMPUTE,
+            buffer: { type: "storage" },
+          },
         ],
       }),
       tonemapper: device.createBindGroupLayout({
@@ -295,6 +303,7 @@ export class PathTracer {
         { binding: 1, resource: { buffer: this.buffers.rendererUBO } },
         { binding: 2, resource: { buffer: this.buffers.triangles } },
         { binding: 3, resource: { buffer: this.buffers.BVH } },
+        { binding: 4, resource: { buffer: this.buffers.debug } },
       ],
     });
 
@@ -411,6 +420,24 @@ export class PathTracer {
     return arr;
   }
 
+  async readDebug() {
+    if (!this.buffers.debug) return new Float32Array(0);
+    const size = 16 * MB;
+
+    const readBuffer = this.device.createBuffer({
+      size,
+      usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+    });
+    const cmd = this.device.createCommandEncoder();
+    cmd.copyBufferToBuffer(this.buffers.debug, 0, readBuffer, 0, size);
+    this.device.queue.submit([cmd.finish()]);
+
+    await readBuffer.mapAsync(GPUMapMode.READ);
+    const arr = new Uint32Array(readBuffer.getMappedRange().slice(0));
+    readBuffer.unmap();
+    return arr;
+  }
+
   async setScene(scene) {
     // scene.getTrianglesFloat32() should return Float32Array [x,y,z] * 3 per tri
     this.trianglesData = scene.getTrianglesFloat32();
@@ -444,6 +471,11 @@ export class PathTracer {
       this.cameraQuaternion[1],
       this.cameraQuaternion[2],
       this.cameraQuaternion[3],
+
+      this.frameCount,
+      0,
+      0,
+      0,
     ]);
 
     this.device.queue.writeBuffer(this.buffers.rendererUBO, 0, UBO);
@@ -486,5 +518,9 @@ export class PathTracer {
 
   setCameraQuaternion(x, y, z, w) {
     this.cameraQuaternion = [x, y, z, w];
+  }
+
+  setFrameCount(frameCount) {
+    this.frameCount = frameCount;
   }
 }

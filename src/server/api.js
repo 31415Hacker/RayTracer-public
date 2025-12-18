@@ -1,7 +1,7 @@
-import express from "express";
-import cors from "cors";
-import { writeFile, mkdir } from "fs/promises";
-import path from "path";
+const express = require("express");
+const cors = require("cors");
+const { writeFile, mkdir } = require("fs/promises");
+const path = require("path");
 
 const app = express();
 

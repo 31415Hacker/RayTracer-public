@@ -2,11 +2,20 @@ import * as PT from "./libs/PathTracer.js";
 import * as PTScene from "./libs/Scene.js";
 import { FPSCamera } from "./libs/controls/input-handler.js";
 
-const FPSCounter = document.getElementById("fps");
+/* ============================================================
+   DOM
+============================================================ */
 
+const FPSCounter = document.getElementById("fps");
 const canvas = document.getElementById("c");
+
+/* ============================================================
+   Path Tracer + Camera
+============================================================ */
+
 const pathTracer = new PT.PathTracer(canvas);
-const FPScamera = new FPSCamera({
+
+const fpsCamera = new FPSCamera({
     canvas,
     position: [0, 0, 2.5],
     fly: true
@@ -14,57 +23,109 @@ const FPScamera = new FPSCamera({
 
 await pathTracer.initialize();
 
+/* ============================================================
+   Scene
+============================================================ */
+
 const scene = new PTScene.Scene();
-await scene.loadGLB('/assets/dragon.glb', {
+await scene.loadGLB("/assets/dragon.glb", {
     normalize: true,
     mode: "cube"
 });
 await pathTracer.setScene(scene);
 
-let lastFrame = performance.now();
-let fpsTimer = performance.now();
-let frameCount = 0;
+/* ============================================================
+   Timing / Counters
+============================================================ */
 
-let dumped = false;
+// Timing
+let lastFrameTime = performance.now();
+let fpsTimer = performance.now();
+
+// FPS counter (resets every second)
+let fpsFrameCounter = 0;
+
+// Monotonic frame index (never resets, goes to GPU)
+let frameIndex = 0;
+
+// Debug dump control
+let debugDumped = false;
+
+/* ============================================================
+   Main Loop
+============================================================ */
 
 async function main() {
+    /* ------------------------------
+       Time
+    ------------------------------ */
+
     const now = performance.now();
-    const dt = (now - lastFrame) / 1000;
-    lastFrame = now;
+    const deltaTime = (now - lastFrameTime) / 1000;
+    lastFrameTime = now;
 
-    FPScamera.update(dt);
+    /* ------------------------------
+       Camera update
+    ------------------------------ */
 
-    frameCount++;
+    fpsCamera.update(deltaTime);
+
+    /* ------------------------------
+       FPS tracking
+    ------------------------------ */
+
+    fpsFrameCounter++;
+    frameIndex++;
+
     if (now - fpsTimer >= 1000) {
-        FPSCounter.innerText = frameCount + " FPS";
-        frameCount = 0;
+        FPSCounter.innerText = `${fpsFrameCounter} FPS`;
+        fpsFrameCounter = 0;
         fpsTimer = now;
     }
 
-    pathTracer.setCameraPosition(...FPScamera.position);
-    pathTracer.setCameraQuaternion(...FPScamera.rotation);
+    /* ------------------------------
+       Upload camera + frame index
+    ------------------------------ */
+
+    pathTracer.setCameraPosition(...fpsCamera.position);
+    pathTracer.setCameraQuaternion(...fpsCamera.rotation);
+    pathTracer.setFrameCount(frameIndex);
+
+    /* ------------------------------
+       Render (GPU writes debug here)
+    ------------------------------ */
 
     await pathTracer.render();
 
-    if (!dumped) {
-        const BVH = await pathTracer.readBVH();
+    /* ------------------------------
+       Read debug buffer ONCE
+    ------------------------------ */
 
-        const dump = BVH.slice(0, 1 + 1000 * 4);
+    if (!debugDumped) {
+        const debug = (await pathTracer.readDebug()).slice(0, 1000);
 
-        await fetch("http://localhost:3000/api/write", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                filename: "BVH_first_1000_nodes.json",
-                content: JSON.stringify(Array.from(dump), null, 2)
-            })
-        });
+        // Check if ANY non-zero value exists
+        if (debug.some(v => v !== 0)) {
+            console.log(
+                "Non-zero debug entries:",
+                debug
+                    .map((value, index) => ({ index, value }))
+                    .filter(e => e.value !== 0)
+            );
 
-        dumped = true;
-        console.log("BVH dump written (first 1000 nodes)");
+            debugDumped = true;
+        }
     }
+
+    /* ------------------------------
+       Next frame
+    ------------------------------ */
 
     requestAnimationFrame(main);
 }
+
+/* ============================================================
+   Start
+============================================================ */
 
 main();
