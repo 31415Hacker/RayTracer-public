@@ -5,6 +5,7 @@
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server/server.js",
+    "api": "node src/server/api.js",
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview"

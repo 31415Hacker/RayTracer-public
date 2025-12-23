@@ -1,194 +1,116 @@
 import json
-import struct
 import numpy as np
 from pygltflib import GLTF2
-from numba import njit
 
-# ============================================================
-# Config
-# ============================================================
+INF = np.float32(1e30)
 
 BVH_FILE = "data/BVH_full.json"
 GLB_FILE = "public/assets/dragon.glb"
 
 RAY_ORIGIN = np.array([0.0, 0.0, 2.5], dtype=np.float32)
-RAY_DIR = np.array([0.0, 0.0, 1.0], dtype=np.float32)
+RAY_DIR = np.array([0.0, 0.0, -1.0], dtype=np.float32)
 RAY_DIR /= np.linalg.norm(RAY_DIR)
 
-INF = np.float32(1e30)
+NODES_INTERSECTED = 0
 
 # ============================================================
-# FP16 unpack (WGSL compatible, Numba-safe)
+# FP16 unpack
 # ============================================================
+
 def unpack2x16float(u32):
     lo = np.uint16(u32 & 0xFFFF)
     hi = np.uint16((u32 >> 16) & 0xFFFF)
 
-    f0 = np.float32(np.float16(lo))
-    f1 = np.float32(np.float16(hi))
-    return f0, f1
+    f0 = np.frombuffer(lo.tobytes(), dtype=np.float16)[0]
+    f1 = np.frombuffer(hi.tobytes(), dtype=np.float16)[0]
+
+    return np.float32(f0), np.float32(f1)
 
 # ============================================================
-# BVH node decode (FIXED return signature)
+# BVH node decode
 # ============================================================
 
 def get_bvh_node(BVH, index):
     base = 1 + index * 4
-
     if base + 3 >= BVH.shape[0]:
-        return (
-            False,
-            0.0, 0.0, 0.0,
-            0.0, 0.0, 0.0,
-            0, 0
-        )
+        return None
 
     a0, a1 = unpack2x16float(BVH[base + 0])
     b0, b1 = unpack2x16float(BVH[base + 1])
     c0, c1 = unpack2x16float(BVH[base + 2])
 
-    mnx, mny, mnz = a0, a1, b0
-    mxx, mxy, mxz = b1, c0, c1
+    mn = np.array([a0, a1, b0], dtype=np.float32)
+    mx = np.array([b1, c0, c1], dtype=np.float32)
 
     bits = BVH[base + 3]
     firstTri = bits >> 3
     triCount = bits & 7
 
-    valid = (mnx <= mxx) and (mny <= mxy) and (mnz <= mxz)
+    valid = np.all(mn <= mx)
 
-    return (
-        valid,
-        mnx, mny, mnz,
-        mxx, mxy, mxz,
-        firstTri,
-        triCount
-    )
+    return {
+        "index": index,
+        "mn": mn,
+        "mx": mx,
+        "firstTri": firstTri,
+        "triCount": triCount,
+        "valid": valid
+    }
 
 # ============================================================
 # Ray / AABB
 # ============================================================
 
-@njit
-def intersect_aabb(ro, invrd, mnx, mny, mnz, mxx, mxy, mxz):
-    t1x = (mnx - ro[0]) * invrd[0]
-    t2x = (mxx - ro[0]) * invrd[0]
-    t1y = (mny - ro[1]) * invrd[1]
-    t2y = (mxy - ro[1]) * invrd[1]
-    t1z = (mnz - ro[2]) * invrd[2]
-    t2z = (mxz - ro[2]) * invrd[2]
+def intersect_aabb(ro, invrd, mn, mx):
+    global NODES_INTERSECTED
+    NODES_INTERSECTED += 1
+    t1 = (mn - ro) * invrd
+    t2 = (mx - ro) * invrd
 
-    tmin = max(min(t1x, t2x), min(t1y, t2y), min(t1z, t2z))
-    tmax = min(max(t1x, t2x), max(t1y, t2y), max(t1z, t2z))
+    tmin = max(min(t1[0], t2[0]), min(t1[1], t2[1]), min(t1[2], t2[2]))
+    tmax = min(max(t1[0], t2[0]), max(t1[1], t2[1]), max(t1[2], t2[2]))
 
     if tmax >= max(tmin, 0.0):
-        return tmin
+        return np.float32(tmin)
     return INF
 
 # ============================================================
-# Ray / Triangle (Möller–Trumbore)
+# Ray / Triangle
 # ============================================================
 
-@njit
 def intersect_triangle(ro, rd, v0, v1, v2):
     eps = 1e-7
-
     e1 = v1 - v0
     e2 = v2 - v0
     p = np.cross(rd, e2)
     det = np.dot(e1, p)
-
     if abs(det) < eps:
         return INF
-
     invDet = 1.0 / det
     s = ro - v0
     u = invDet * np.dot(s, p)
     if u < 0.0 or u > 1.0:
         return INF
-
     q = np.cross(s, e1)
     v = invDet * np.dot(rd, q)
     if v < 0.0 or u + v > 1.0:
         return INF
-
     t = invDet * np.dot(e2, q)
     return t if t > eps else INF
 
 # ============================================================
-# BVH4 traversal (near-first)
-# ============================================================
-
-def traverse_bvh(BVH, triangles, ro, rd):
-    num_nodes = BVH[0]
-
-    invrd = np.empty(3, np.float32)
-    for i in range(3):
-        invrd[i] = 1.0 / rd[i] if abs(rd[i]) > 1e-8 else INF
-
-    stack = np.empty(64, np.uint32)
-    sp = 0
-    stack[0] = 0
-
-    closest_t = INF
-    hit_tri = -1
-    visited = 0
-    leaf_hits = 0
-
-    while sp >= 0:
-        node = stack[sp]
-        sp -= 1
-        visited += 1
-
-        (
-            ok,
-            mnx, mny, mnz,
-            mxx, mxy, mxz,
-            firstTri,
-            triCount
-        ) = get_bvh_node(BVH, node)
-
-        if not ok:
-            continue
-
-        d = intersect_aabb(ro, invrd, mnx, mny, mnz, mxx, mxy, mxz)
-        if d >= closest_t:
-            continue
-
-        if triCount > 0:
-            leaf_hits += 1
-            for i in range(firstTri, firstTri + triCount):
-                v0 = triangles[i, 0]
-                v1 = triangles[i, 1]
-                v2 = triangles[i, 2]
-                t = intersect_triangle(ro, rd, v0, v1, v2)
-                if t < closest_t:
-                    closest_t = t
-                    hit_tri = i
-        else:
-            base = node * 4 + 1
-            for c in range(4):
-                ci = base + c
-                if ci < num_nodes:
-                    sp += 1
-                    stack[sp] = ci
-
-    return visited, leaf_hits, hit_tri, closest_t
-
-# ============================================================
-# GLB loader (Scene.js equivalent)
+# GLB loader
 # ============================================================
 
 def load_glb_triangles(path):
     gltf = GLTF2().load(path)
     blob = gltf.binary_blob()
-
     tris = []
 
     for mesh in gltf.meshes:
         for prim in mesh.primitives:
             acc = gltf.accessors[prim.attributes.POSITION]
             view = gltf.bufferViews[acc.bufferView]
-
             offset = (view.byteOffset or 0) + (acc.byteOffset or 0)
             raw = blob[offset : offset + acc.count * 12]
             verts = np.frombuffer(raw, dtype=np.float32).reshape((-1, 3))
@@ -204,18 +126,14 @@ def load_glb_triangles(path):
 
             for i in range(0, len(indices), 3):
                 tris.append((
-                    verts[indices[i + 0]],
-                    verts[indices[i + 1]],
-                    verts[indices[i + 2]],
+                    verts[indices[i]],
+                    verts[indices[i+1]],
+                    verts[indices[i+2]],
                 ))
 
     tris = np.array(tris, dtype=np.float32)
     normalize_mesh(tris)
     return tris
-
-# ============================================================
-# Normalize mesh (matches Scene.js)
-# ============================================================
 
 def normalize_mesh(tris):
     mn = np.min(tris.reshape(-1, 3), axis=0)
@@ -223,31 +141,102 @@ def normalize_mesh(tris):
     center = (mn + mx) * 0.5
     scale = 2.0 / np.max(mx - mn)
     tris[:] = (tris - center) * scale
-    print("Mesh normalized.")
+
+# ============================================================
+# FULL DEBUG BVH TRAVERSAL
+# ============================================================
+
+def traverse_bvh_debug(BVH, triangles, ro, rd):
+    num_nodes = int(BVH[0])
+    invrd = np.array([
+        1.0 / rd[i] if abs(rd[i]) > 1e-8 else INF
+        for i in range(3)
+    ], dtype=np.float32)
+
+    stack = []
+    stack.append(0)
+
+    closest_t = INF
+    hit_tri = -1
+    step = 0
+
+    print("\n===== BVH DEBUG TRACE START =====\n")
+
+    while stack:
+        node = stack.pop()
+        step += 1
+
+        print(f"\n--- STEP {step} ---")
+        print("POP node:", node)
+        print("STACK BEFORE:", stack)
+
+        n = get_bvh_node(BVH, node)
+        print("Node: ", n, "\n")
+
+        if n is None or not n["valid"]:
+            print("Node invalid → skip")
+            continue
+
+        tmin = intersect_aabb(ro, invrd, n["mn"], n["mx"])
+        print("AABB tmin:", tmin, "closest_t:", closest_t)
+
+        if tmin >= closest_t:
+            print("AABB rejected")
+            continue
+
+        if n["triCount"] > 0:
+            print("LEAF node")
+            for i in range(n["firstTri"], n["firstTri"] + n["triCount"]):
+                t = intersect_triangle(ro, rd, *triangles[i])
+                if t < closest_t:
+                    closest_t = t
+                    hit_tri = i
+                    print(f"  HIT triangle {i} at t={t}")
+            continue
+
+        print("INTERNAL node")
+
+        base = node * 4 + 1
+        children = []
+
+        for c in range(4):
+            ci = base + c
+            if ci >= num_nodes:
+                continue
+
+            cn = get_bvh_node(BVH, ci)
+            if cn is None or not cn["valid"]:
+                continue
+
+            ct = intersect_aabb(ro, invrd, cn["mn"], cn["mx"])
+            if ct < closest_t:
+                children.append((ct, ci))
+                print(f"  CHILD {ci} accepted, tmin={ct}")
+            else:
+                print(f"  CHILD {ci} rejected")
+
+        children.sort(key=lambda x: x[0])
+
+        for _, ci in reversed(children):
+            stack.append(ci)
+
+        print("STACK AFTER:", stack)
+
+    print("\n===== BVH DEBUG TRACE END =====")
+    print("HIT TRIANGLE:", hit_tri)
+    print("CLOSEST T:", closest_t)
+
+    global NODES_INTERSECTED
+    print("Nodes intersected:", NODES_INTERSECTED)
 
 # ============================================================
 # Main
 # ============================================================
 
 if __name__ == "__main__":
-    print("Loading BVH...")
     with open(BVH_FILE) as f:
         BVH = np.array(json.load(f), dtype=np.uint32)
-    print("BVH nodes:", BVH[0])
 
-    print("Loading GLB triangles...")
     triangles = load_glb_triangles(GLB_FILE)
-    print("Triangles:", len(triangles))
 
-    print("Running BVH traversal (JIT warmup)...")
-    traverse_bvh(BVH, triangles, RAY_ORIGIN, RAY_DIR)
-
-    visited, leaf_hits, hit_tri, t = traverse_bvh(
-        BVH, triangles, RAY_ORIGIN, RAY_DIR
-    )
-
-    print("\n=== BVH DEBUG TRAVERSAL END ===")
-    print("Visited nodes :", visited)
-    print("Leaf hits     :", leaf_hits)
-    print("Triangle hit  :", hit_tri)
-    print("Closest t     :", t)
+    traverse_bvh_debug(BVH, triangles, RAY_ORIGIN, RAY_DIR)

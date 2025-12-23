@@ -9,9 +9,6 @@ const PACKET_SIZE: u32 = PACKET_W * PACKET_H;
 // BVH traversal stack
 const STACK_MAX: u32 = 32u;
 
-// Debug snapshot: only when ubo.frameCounter == DEBUG_FRAME
-const DEBUG_FRAME: u32 = 10u;
-
 // ============================================================
 // Structs
 // ============================================================
@@ -69,9 +66,6 @@ var<storage, read> triangles: array<f32>;
 @group(0) @binding(3)
 var<storage, read> BVH: array<u32>;
 
-@group(0) @binding(4)
-var<storage, read_write> debug: array<u32>;
-
 // ============================================================
 // Constants
 // ============================================================
@@ -83,7 +77,6 @@ const INF: f32 = 1e30;
 // ============================================================
 
 fn rotateVectorByQuat(v: vec3<f32>, q: vec4<f32>) -> vec3<f32> {
-    // Your earlier version with fma also works; this is stable & common:
     let u = q.xyz;
     let s = q.w;
     let uv = cross(u, v);
@@ -243,14 +236,12 @@ fn intersectTrianglePacket(
 
 // ============================================================
 // BVH packet traversal (BVH4 implicit heap layout)
-// with ONE stack snapshot at frame 10 for center packet
 // ============================================================
 
 fn traverseBVHPacket(
     packet: RayPacket,
     numTris: u32,
     initMask: LaneMask,
-    isCenterPacket: bool
 ) -> HitPacket {
     let numNodes = BVH[0u];
 
@@ -272,29 +263,16 @@ fn traverseBVHPacket(
     stack[0] = 0u;
     stackMask[0] = initMask;
 
-    // snapshot gate
-    let doSnapshot = isCenterPacket && (u32(ubo.frameCounter.x) == DEBUG_FRAME);
-    var snapshotDone: bool = false;
-
+    // For debug: track traversal history
+    var traversalHistory: array<u32, 64>; // Store up to 32 nodes visited (2 u32s each)
+    var historyIndex: u32 = 0u;
+    
     loop {
         if (sp < 0) { break; }
 
         let nodeIndex = stack[u32(sp)];
         let laneMask = stackMask[u32(sp)];
         sp -= 1;
-
-        // ---- snapshot current stack ONCE ----
-        // Snapshot after pop: stack[0..sp] is the remaining stack.
-        if (doSnapshot && !snapshotDone) {
-            let depth = u32(sp + 1);
-            debug[0] = depth;
-
-            for (var i: u32 = 0u; i < depth; i += 1u) {
-                debug[1u + i] = stack[i];
-            }
-
-            snapshotDone = true;
-        }
 
         let node = getBVHNode(nodeIndex);
 
@@ -431,15 +409,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
 
-    // Center packet selection (packet grid is res / PACKET_W,H)
-    // Using packet coordinates, not pixel coordinates:
-    let packetsX = (res.x + (PACKET_W - 1u)) / PACKET_W;
-    let packetsY = (res.y + (PACKET_H - 1u)) / PACKET_H;
-
-    let isCenterPacket =
-        (gid.x == packetsX / 2u) &&
-        (gid.y == packetsY / 2u);
-
     let aspect = ubo.resolution.w;
     let focal = ubo.resolution.z;
 
@@ -475,7 +444,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 
     let numTris = u32(ubo.camPosNumTris.w);
-    let hits = traverseBVHPacket(packet, numTris, laneMask, isCenterPacket);
+    let hits = traverseBVHPacket(packet, numTris, laneMask);
 
     // Write pixels
     for (var i: u32 = 0u; i < PACKET_SIZE; i += 1u) {

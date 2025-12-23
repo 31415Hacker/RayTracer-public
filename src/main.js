@@ -48,9 +48,6 @@ let fpsFrameCounter = 0;
 // Monotonic frame index (never resets, goes to GPU)
 let frameIndex = 0;
 
-// Debug dump control
-let debugDumped = false;
-
 /* ============================================================
    Main Loop
 ============================================================ */
@@ -92,30 +89,10 @@ async function main() {
     pathTracer.setFrameCount(frameIndex);
 
     /* ------------------------------
-       Render (GPU writes debug here)
+       Render
     ------------------------------ */
 
     await pathTracer.render();
-
-    /* ------------------------------
-       Read debug buffer ONCE
-    ------------------------------ */
-
-    if (!debugDumped) {
-        const debug = (await pathTracer.readDebug()).slice(0, 1000);
-
-        // Check if ANY non-zero value exists
-        if (debug.some(v => v !== 0)) {
-            console.log(
-                "Non-zero debug entries:",
-                debug
-                    .map((value, index) => ({ index, value }))
-                    .filter(e => e.value !== 0)
-            );
-
-            debugDumped = true;
-        }
-    }
 
     /* ------------------------------
        Next frame
