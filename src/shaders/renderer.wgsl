@@ -81,7 +81,7 @@ fn rotateVectorByQuat(v: vec3<f32>, q: vec4<f32>) -> vec3<f32> {
     let s = q.w;
     let uv = cross(u, v);
     let uuv = cross(u, uv);
-    return v + (2.0 * (s * uv + uuv));
+    return fma(vec3<f32>(2.0), fma(vec3<f32>(s), uv, uuv), v);
 }
 
 fn safeInvDir(d: vec3<f32>) -> vec3<f32> {
@@ -106,8 +106,6 @@ fn getTriangle(index: u32) -> Triangle {
 }
 
 fn getBVHNode(index: u32) -> BVHNode {
-    // BVH[0] = numNodes
-    // Node i: 4 u32 at offset 1 + i*4
     let base = 1u + index * 4u;
 
     let a = unpack2x16float(BVH[base + 0u]);
@@ -130,7 +128,7 @@ fn getBVHNode(index: u32) -> BVHNode {
 
 fn anyLane(mask: LaneMask) -> bool {
     var any: bool = false;
-    for (var i: u32 = 0u; i < PACKET_SIZE; i += 1u) {
+    for (var i: u32 = 0u; i < PACKET_SIZE; i++) {
         any = any || mask[i];
     }
     return any;
@@ -192,7 +190,7 @@ fn intersectAABBPacketMask(
 }
 
 // ============================================================
-// Packet triangle intersection (updates HitPacket in place)
+// Packet Triangle Intersection Function
 // ============================================================
 
 fn intersectTrianglePacket(

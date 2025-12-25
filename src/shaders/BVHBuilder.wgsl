@@ -31,11 +31,7 @@ var<uniform> ubo : vec4<u32>; // x = numTris, y = maxDepth, z,w unused
 // -----------------------------------------
 
 fn pow4(exp: u32) -> u32 {
-    var r = 1u;
-    for (var i = 0u; i < exp; i = i + 1u) {
-        r = r * 4u;
-    }
-    return r;
+    return 1u << (exp << 1u);
 }
 
 fn getTriangleBounds(ti: u32) -> array<vec3<f32>, 2u> {
@@ -69,8 +65,8 @@ fn nodeDepth(node: u32) -> u32 {
         return 0u;
     }
     let val = f32(3u * node + 1u);
-    let log4 = log2(val) / 2.0;
-    return u32(floor(log4));
+    let log2 = log2(val);
+    return u32(floor(log2)) >> 1u;
 }
 
 // Map a node index → [startTri, endTri) using a perfect 4-ary tree
@@ -91,23 +87,15 @@ fn getNodeTriRange(node: u32, numTris: u32, maxDepth: u32) -> vec2<u32> {
     var leafStartIdx = nodeOffset * leavesPerNode;
     var leafEndIdx   = leafStartIdx + leavesPerNode;
 
-    if (leafStartIdx > totalLeaves) {
-        leafStartIdx = totalLeaves;
-    }
-    if (leafEndIdx > totalLeaves) {
-        leafEndIdx = totalLeaves;
-    }
+    leafStartIdx = min(totalLeaves, leafStartIdx);
+    leafEndIdx = min(totalLeaves, leafEndIdx);
 
     // Evenly distribute triangles over leaves; leaves beyond numTris are empty
     var startTri = leafStartIdx;
     var endTri   = leafEndIdx;
 
-    if (startTri > numTris) {
-        startTri = numTris;
-    }
-    if (endTri > numTris) {
-        endTri = numTris;
-    }
+    startTri = min(numTris, startTri);
+    endTri = min(numTris, endTri);
 
     return vec2<u32>(startTri, endTri);
 }
@@ -175,13 +163,8 @@ fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
 
     // Leaf nodes (depth == maxDepth) actually own the triangle range
     let depth = nodeDepth(node);
-    var firstTriLeaf: u32 = 0u;
-    var triCountLeaf: u32 = 0u;
-
-    if (depth == maxDepth) {
-        firstTriLeaf = startTri;
-        triCountLeaf = endTri - startTri;
-    }
+    var firstTriLeaf: u32 = select(0u, startTri, depth == maxDepth);
+    var triCountLeaf: u32 = select(0u, endTri - startTri, depth == maxDepth);
 
     writeNode(node, mn, mx, firstTriLeaf, triCountLeaf);
 }

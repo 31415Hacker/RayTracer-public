@@ -16,9 +16,9 @@ const canvas = document.getElementById("c");
 const pathTracer = new PT.PathTracer(canvas);
 
 const fpsCamera = new FPSCamera({
-    canvas,
-    position: [0, 0, 2.5],
-    fly: true
+   canvas,
+   position: [0, 0, 2.5],
+   fly: true
 });
 
 await pathTracer.initialize();
@@ -29,8 +29,8 @@ await pathTracer.initialize();
 
 const scene = new PTScene.Scene();
 await scene.loadGLB("/assets/dragon.glb", {
-    normalize: true,
-    mode: "cube"
+   normalize: true,
+   mode: "cube"
 });
 await pathTracer.setScene(scene);
 
@@ -41,11 +41,7 @@ await pathTracer.setScene(scene);
 // Timing
 let lastFrameTime = performance.now();
 let fpsTimer = performance.now();
-
-// FPS counter (resets every second)
 let fpsFrameCounter = 0;
-
-// Monotonic frame index (never resets, goes to GPU)
 let frameIndex = 0;
 
 /* ============================================================
@@ -53,56 +49,28 @@ let frameIndex = 0;
 ============================================================ */
 
 async function main() {
-    /* ------------------------------
-       Time
-    ------------------------------ */
+   const now = performance.now();
+   const deltaTime = (now - lastFrameTime) / 1000;
+   lastFrameTime = now;
 
-    const now = performance.now();
-    const deltaTime = (now - lastFrameTime) / 1000;
-    lastFrameTime = now;
+   fpsCamera.update(deltaTime);
 
-    /* ------------------------------
-       Camera update
-    ------------------------------ */
+   fpsFrameCounter++;
+   frameIndex++;
 
-    fpsCamera.update(deltaTime);
+   if (now - fpsTimer >= 1000) {
+     FPSCounter.innerText = `${fpsFrameCounter} FPS`;
+     fpsFrameCounter = 0;
+     fpsTimer = now;
+   }
 
-    /* ------------------------------
-       FPS tracking
-    ------------------------------ */
+   pathTracer.setCameraPosition(...fpsCamera.position);
+   pathTracer.setCameraQuaternion(...fpsCamera.rotation);
+   pathTracer.setFrameCount(frameIndex);
 
-    fpsFrameCounter++;
-    frameIndex++;
+   await pathTracer.render();
 
-    if (now - fpsTimer >= 1000) {
-        FPSCounter.innerText = `${fpsFrameCounter} FPS`;
-        fpsFrameCounter = 0;
-        fpsTimer = now;
-    }
-
-    /* ------------------------------
-       Upload camera + frame index
-    ------------------------------ */
-
-    pathTracer.setCameraPosition(...fpsCamera.position);
-    pathTracer.setCameraQuaternion(...fpsCamera.rotation);
-    pathTracer.setFrameCount(frameIndex);
-
-    /* ------------------------------
-       Render
-    ------------------------------ */
-
-    await pathTracer.render();
-
-    /* ------------------------------
-       Next frame
-    ------------------------------ */
-
-    requestAnimationFrame(main);
+   requestAnimationFrame(main);
 }
-
-/* ============================================================
-   Start
-============================================================ */
 
 main();
