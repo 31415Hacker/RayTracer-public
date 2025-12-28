@@ -90,4 +90,15 @@ Inside the app, you can use **WASD** for moving forward, left, right, and backwa
 
 ---
 
+## Capabilities
+Here's a little benchmark I did:
+- GPU: UHD 600
+- Scene: Stanford Dragon
+- Resolution: 1920×1080
+- FPS: ~36–38
+- Build time: ~5-6s (11s first time)
+- Features: BVH-only, no SAH
+
+---
+
 That's it for now! I will include extra information inside this README in the future.

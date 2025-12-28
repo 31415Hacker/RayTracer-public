@@ -1,25 +1,20 @@
-// ============================================================
-// Packet configuration (change these freely, recompile)
-// ============================================================
+// renderer.wgsl
+// BVH4 traversal (explicit 4 children, LBVH4 after CPU collapse)
 
 const PACKET_W: u32 = 2u;
 const PACKET_H: u32 = 2u;
 const PACKET_SIZE: u32 = PACKET_W * PACKET_H;
 
-// BVH traversal stack
-const STACK_MAX: u32 = 32u;
+const STACK_MAX: u32 = 64u;
 
-// ============================================================
-// Structs
-// ============================================================
+const NODE4_STRIDE_U32: u32 = 8u;
+const LEAF_FLAG: u32 = 0x80000000u;
+const INVALID: u32 = 0xFFFFFFFFu;
 
 struct RendererUBO {
     resolution: vec4<f32>,
-    // x: width, y: height, z: focal, w: aspect
     camPosNumTris: vec4<f32>,
-    // xyz: camera position, w: num triangles
     camQuat: vec4<f32>,
-    // camera orientation quaternion
     frameCounter: vec4<f32>,
 };
 
@@ -35,11 +30,15 @@ struct Triangle {
     v2: vec3<f32>,
 };
 
-struct BVHNode {
+struct BVHNode4 {
     min: vec3<f32>,
     max: vec3<f32>,
-    firstTri: u32,
-    triCount: u32,
+    c0: u32,
+    c1: u32,
+    c2: u32,
+    c3: u32,
+    triIndex: u32,
+    isLeaf: bool,
 };
 
 struct HitPacket {
@@ -49,10 +48,6 @@ struct HitPacket {
 };
 
 alias LaneMask = array<bool, PACKET_SIZE>;
-
-// ============================================================
-// Bindings
-// ============================================================
 
 @group(0) @binding(0)
 var outputTex: texture_storage_2d<rgba8unorm, write>;
@@ -66,15 +61,7 @@ var<storage, read> triangles: array<f32>;
 @group(0) @binding(3)
 var<storage, read> BVH: array<u32>;
 
-// ============================================================
-// Constants
-// ============================================================
-
 const INF: f32 = 1e30;
-
-// ============================================================
-// Math Helpers
-// ============================================================
 
 fn rotateVectorByQuat(v: vec3<f32>, q: vec4<f32>) -> vec3<f32> {
     let u = q.xyz;
@@ -92,10 +79,6 @@ fn safeInvDir(d: vec3<f32>) -> vec3<f32> {
     );
 }
 
-// ============================================================
-// Data Access
-// ============================================================
-
 fn getTriangle(index: u32) -> Triangle {
     let b = index * 9u;
     return Triangle(
@@ -105,38 +88,35 @@ fn getTriangle(index: u32) -> Triangle {
     );
 }
 
-fn getBVHNode(index: u32) -> BVHNode {
-    let base = 1u + index * 4u;
+fn getBVHNode4(index: u32) -> BVHNode4 {
+    let base = 1u + index * NODE4_STRIDE_U32;
 
     let a = unpack2x16float(BVH[base + 0u]);
     let b = unpack2x16float(BVH[base + 1u]);
     let c = unpack2x16float(BVH[base + 2u]);
 
-    let mn = vec3<f32>(a.xy, b.x);
-    let mx = vec3<f32>(b.y, c.xy);
+    let mn = vec3<f32>(a.x, a.y, b.x);
+    let mx = vec3<f32>(b.y, c.x, c.y);
 
-    let bits = BVH[base + 3u];
-    let firstTri = bits >> 3u;
-    let triCount = bits & 0x7u;
+    let c0 = BVH[base + 3u];
+    let c1 = BVH[base + 4u];
+    let c2 = BVH[base + 5u];
+    let c3 = BVH[base + 6u];
 
-    return BVHNode(mn, mx, firstTri, triCount);
+    let metadata = BVH[base + 7u];
+    let isLeaf = (metadata & LEAF_FLAG) != 0u;
+    let triIndex = metadata & 0x7FFFFFFFu;
+
+    return BVHNode4(mn, mx, c0, c1, c2, c3, triIndex, isLeaf);
 }
-
-// ============================================================
-// Mask utilities
-// ============================================================
 
 fn anyLane(mask: LaneMask) -> bool {
-    var any: bool = false;
-    for (var i: u32 = 0u; i < PACKET_SIZE; i++) {
-        any = any || mask[i];
+    var anyH: bool = false;
+    for (var i: u32 = 0u; i < PACKET_SIZE; i += 1u) {
+        anyH = anyH || mask[i];
     }
-    return any;
+    return anyH;
 }
-
-// ============================================================
-// Packet AABB test that also computes per-lane hit mask
-// ============================================================
 
 fn intersectAABBPacketMask(
     packet: RayPacket,
@@ -150,7 +130,6 @@ fn intersectAABBPacketMask(
     var minT: f32 = INF;
     var anyHit: bool = false;
 
-    // If invalid AABB, kill all lanes
     if (any(mn > mx)) {
         for (var i: u32 = 0u; i < PACKET_SIZE; i += 1u) {
             (*outMask)[i] = false;
@@ -188,10 +167,6 @@ fn intersectAABBPacketMask(
 
     (*outMinT) = select(INF, minT, anyHit);
 }
-
-// ============================================================
-// Packet Triangle Intersection Function
-// ============================================================
 
 fn intersectTrianglePacket(
     packet: RayPacket,
@@ -232,16 +207,12 @@ fn intersectTrianglePacket(
     }
 }
 
-// ============================================================
-// BVH packet traversal (BVH4 implicit heap layout)
-// ============================================================
-
-fn traverseBVHPacket(
+fn traverseBVH4Packet(
     packet: RayPacket,
     numTris: u32,
-    initMask: LaneMask,
+    initMask: LaneMask
 ) -> HitPacket {
-    let numNodes = BVH[0u];
+    let numNodes: u32 = BVH[0u];
 
     var out: HitPacket;
     for (var i: u32 = 0u; i < PACKET_SIZE; i += 1u) {
@@ -261,10 +232,6 @@ fn traverseBVHPacket(
     stack[0] = 0u;
     stackMask[0] = initMask;
 
-    // For debug: track traversal history
-    var traversalHistory: array<u32, 64>; // Store up to 32 nodes visited (2 u32s each)
-    var historyIndex: u32 = 0u;
-    
     loop {
         if (sp < 0) { break; }
 
@@ -272,13 +239,12 @@ fn traverseBVHPacket(
         let laneMask = stackMask[u32(sp)];
         sp -= 1;
 
-        let node = getBVHNode(nodeIndex);
+        let node = getBVHNode4(nodeIndex);
 
         if (any(node.min > node.max)) {
             continue;
         }
 
-        // Tight node reject using packet AABB mask
         var hitMask: LaneMask;
         var nodeMinT: f32;
 
@@ -296,86 +262,82 @@ fn traverseBVHPacket(
             continue;
         }
 
-        if (node.triCount > 0u) {
-            var iTri = node.firstTri;
-            let end = min(iTri + node.triCount, numTris);
-
-            loop {
-                if (iTri >= end) { break; }
-
-                let tri = getTriangle(iTri);
+        if (node.isLeaf) {
+            let ti = node.triIndex;
+            if (ti < numTris) {
+                let tri = getTriangle(ti);
                 let triN = normalize(cross(tri.v1 - tri.v0, tri.v2 - tri.v0));
-
                 intersectTrianglePacket(packet, tri, triN, hitMask, &out);
-
-                iTri += 1u;
             }
-        } else {
-            // children are at nodeIndex*4 + 1 .. +4
-            let base = nodeIndex * 4u + 1u;
+            continue;
+        }
 
-            // gather children with their per-lane masks and min distances
-            var childIdx: array<u32, 4>;
-            var childDist: array<f32, 4>;
-            var childMasks: array<LaneMask, 4>;
-            var childCount: u32 = 0u;
+        // BVH4 children
+        var childIdx: array<u32, 4>;
+        childIdx[0u] = node.c0;
+        childIdx[1u] = node.c1;
+        childIdx[2u] = node.c2;
+        childIdx[3u] = node.c3;
 
-            for (var c: u32 = 0u; c < 4u; c += 1u) {
-                let ci = base + c;
-                if (ci >= numNodes) { continue; }
+        var childDist: array<f32, 4>;
+        var childMasks: array<LaneMask, 4>;
+        var childCount: u32 = 0u;
 
-                let child = getBVHNode(ci);
-                if (any(child.min > child.max)) { continue; }
+        for (var c: u32 = 0u; c < 4u; c += 1u) {
+            let ci = childIdx[c];
+            if (ci == INVALID || ci >= numNodes) { continue; }
 
-                var cmask: LaneMask;
-                var cminT: f32;
+            let child = getBVHNode4(ci);
+            if (any(child.min > child.max)) { continue; }
 
-                intersectAABBPacketMask(
-                    packet,
-                    child.min,
-                    child.max,
-                    hitMask,
-                    out.t,
-                    &cmask,
-                    &cminT
-                );
+            var cmask: LaneMask;
+            var cminT: f32;
 
-                if (anyLane(cmask)) {
-                    childIdx[childCount] = ci;
-                    childDist[childCount] = cminT;
-                    childMasks[childCount] = cmask;
-                    childCount += 1u;
-                }
+            intersectAABBPacketMask(
+                packet,
+                child.min,
+                child.max,
+                hitMask,
+                out.t,
+                &cmask,
+                &cminT
+            );
+
+            if (anyLane(cmask)) {
+                childIdx[childCount] = ci;
+                childDist[childCount] = cminT;
+                childMasks[childCount] = cmask;
+                childCount += 1u;
             }
+        }
 
-            // insertion sort by childDist (near-first), <= 4 items
-            for (var i: u32 = 1u; i < childCount; i += 1u) {
-                let kIdx = childIdx[i];
-                let kDist = childDist[i];
-                let kMask = childMasks[i];
+        // select nearest child (min childDist)
+        var best: u32 = 0u;
+        for (var i: u32 = 1u; i < childCount; i += 1u) {
+            best = select(best, i, childDist[i] < childDist[best]);
+        }
 
-                var j: i32 = i32(i) - 1;
+        // swap nearest into slot 0
+        if (best != 0u) {
+            let ti = childIdx[0u];
+            let td = childDist[0u];
+            let tm = childMasks[0u];
 
-                loop {
-                    if (j < 0 || childDist[u32(j)] <= kDist) { break; }
-                    childIdx[u32(j + 1)] = childIdx[u32(j)];
-                    childDist[u32(j + 1)] = childDist[u32(j)];
-                    childMasks[u32(j + 1)] = childMasks[u32(j)];
-                    j -= 1;
-                }
+            childIdx[0u]   = childIdx[best];
+            childDist[0u]  = childDist[best];
+            childMasks[0u] = childMasks[best];
 
-                childIdx[u32(j + 1)] = kIdx;
-                childDist[u32(j + 1)] = kDist;
-                childMasks[u32(j + 1)] = kMask;
-            }
+            childIdx[best]   = ti;
+            childDist[best]  = td;
+            childMasks[best] = tm;
+        }
 
-            // push far -> near
-            for (var i: i32 = i32(childCount) - 1; i >= 0; i -= 1) {
-                if (sp + 1 < i32(STACK_MAX)) {
-                    sp += 1;
-                    stack[u32(sp)] = childIdx[u32(i)];
-                    stackMask[u32(sp)] = childMasks[u32(i)];
-                }
+        // push far -> near
+        for (var i: i32 = i32(childCount) - 1; i >= 0; i -= 1) {
+            if (sp + 1 < i32(STACK_MAX)) {
+                sp += 1;
+                stack[u32(sp)] = childIdx[u32(i)];
+                stackMask[u32(sp)] = childMasks[u32(i)];
             }
         }
     }
@@ -383,20 +345,12 @@ fn traverseBVHPacket(
     return out;
 }
 
-// ============================================================
-// Shading (simple)
-// ============================================================
-
 fn shade(n: vec3<f32>) -> vec3<f32> {
     let lightDir = normalize(vec3<f32>(1.0, 1.5, 1.0));
     let baseColor = vec3<f32>(0.9, 0.7, 0.3);
     let ndotl = max(dot(n, lightDir), 0.0);
     return baseColor * (0.15 + ndotl);
 }
-
-// ============================================================
-// Main (packet per invocation)
-// ============================================================
 
 @compute @workgroup_size(16, 16, 1)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -442,9 +396,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 
     let numTris = u32(ubo.camPosNumTris.w);
-    let hits = traverseBVHPacket(packet, numTris, laneMask);
+    let hits = traverseBVH4Packet(packet, numTris, laneMask);
 
-    // Write pixels
     for (var i: u32 = 0u; i < PACKET_SIZE; i += 1u) {
         if (!laneMask[i]) { continue; }
 
