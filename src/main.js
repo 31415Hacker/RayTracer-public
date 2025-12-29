@@ -2,75 +2,77 @@ import * as PT from "./libs/PathTracer.js";
 import * as PTScene from "./libs/Scene.js";
 import { FPSCamera } from "./libs/controls/input-handler.js";
 
-/* ============================================================
-   DOM
-============================================================ */
-
-const FPSCounter = document.getElementById("fps");
 const canvas = document.getElementById("c");
-
-/* ============================================================
-   Path Tracer + Camera
-============================================================ */
+const FPSCounter = document.getElementById("fps");
 
 const pathTracer = new PT.PathTracer(canvas);
 
 const fpsCamera = new FPSCamera({
-   canvas,
-   position: [0, 0, 2.5],
-   fly: true
+  canvas,
+  position: [0, 0, 2.5],
+  fly: true
 });
 
 await pathTracer.initialize();
 
-/* ============================================================
-   Scene
-============================================================ */
-
+// ---------- Scene ----------
 const scene = new PTScene.Scene();
-await scene.loadGLB("/assets/plane.glb", {
-   normalize: true,
-   mode: "cube"
+await scene.loadGLB("/assets/dragon.glb", {
+  normalize: true,
+  mode: "cube"
 });
 await pathTracer.setScene(scene);
 
-/* ============================================================
-   Timing / Counters
-============================================================ */
+// ---------- BVH Dump (ONCE) ----------
+const numTris = (pathTracer.trianglesData.length / 9) | 0;
+const { bytes: bvh2Bytes } = pathTracer.computeBVH2Sizing(numTris);
 
-// Timing
+const bvh2U32 = await pathTracer.readBVH2(bvh2Bytes);
+
+console.log("Uploading BVH2:", bvh2U32.length * 4, "bytes");
+
+let res = await fetch("http://localhost:3000/api/write", {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/octet-stream"
+  },
+  body: bvh2U32.buffer
+});
+
+if (!res.ok) {
+  console.error("BVH2 dump failed:", await res.text());
+} else {
+  console.log("BVH2 dump complete");
+}
+
+// ---------- Render Loop ----------
 let lastFrameTime = performance.now();
 let fpsTimer = performance.now();
 let fpsFrameCounter = 0;
 let frameIndex = 0;
 
-/* ============================================================
-   Main Loop
-============================================================ */
-
 async function main() {
-   const now = performance.now();
-   const deltaTime = (now - lastFrameTime) / 1000;
-   lastFrameTime = now;
+  const now = performance.now();
+  const deltaTime = (now - lastFrameTime) / 1000;
+  lastFrameTime = now;
 
-   fpsCamera.update(deltaTime);
+  fpsCamera.update(deltaTime);
 
-   fpsFrameCounter++;
-   frameIndex++;
+  fpsFrameCounter++;
+  frameIndex++;
 
-   if (now - fpsTimer >= 1000) {
-     FPSCounter.innerText = `${fpsFrameCounter} FPS`;
-     fpsFrameCounter = 0;
-     fpsTimer = now;
-   }
+  if (now - fpsTimer >= 1000) {
+    FPSCounter.innerText = `${fpsFrameCounter} FPS`;
+    fpsFrameCounter = 0;
+    fpsTimer = now;
+  }
 
-   pathTracer.setCameraPosition(...fpsCamera.position);
-   pathTracer.setCameraQuaternion(...fpsCamera.rotation);
-   pathTracer.setFrameCount(frameIndex);
+  pathTracer.setCameraPosition(...fpsCamera.position);
+  pathTracer.setCameraQuaternion(...fpsCamera.rotation);
+  pathTracer.setFrameCount(frameIndex);
 
-   await pathTracer.render();
-
-   requestAnimationFrame(main);
+  await pathTracer.render();
+  requestAnimationFrame(main);
 }
 
 main();

@@ -1,3 +1,4 @@
+// api.js — BINARY ONLY
 const express = require("express");
 const cors = require("cors");
 const { writeFile, mkdir } = require("fs/promises");
@@ -5,45 +6,41 @@ const path = require("path");
 
 const app = express();
 
-// CORS
 app.use(cors({
   origin: "http://localhost:5173",
-  methods: ["GET", "POST", "OPTIONS"],
+  methods: ["POST", "OPTIONS"],
   allowedHeaders: ["Content-Type"]
 }));
 
-app.use(express.json({ limit: "100mb" }));
+// ❗ DO NOT use express.json() ANYWHERE
+// ❗ DO NOT destructure filename/content
 
-// 🔹 TEST endpoint
-app.post("/api/sum", (req, res) => {
-  const { a, b } = req.body;
-  res.json({ result: a + b });
-});
+app.post(
+  "/api/write",
+  express.raw({ limit: "200mb", type: "*/*" }),
+  async (req, res) => {
+    try {
+      if (!req.body || req.body.length === 0) {
+        return res.status(400).json({ error: "Empty body" });
+      }
 
-// 🔹 WRITE FILE endpoint
-app.post("/api/write", async (req, res) => {
-  try {
-    const { filename, content } = req.body;
+      const dataDir = path.resolve("data");
+      await mkdir(dataDir, { recursive: true });
 
-    if (!filename || content === undefined) {
-      return res.status(400).json({ error: "filename and content required" });
+      const filePath = path.join(dataDir, "BVH2.bin");
+      await writeFile(filePath, Buffer.from(req.body));
+
+      res.json({
+        success: true,
+        bytesWritten: req.body.length
+      });
+    } catch (err) {
+      console.error(err);
+      res.status(500).json({ error: "Write failed" });
     }
-
-    // Ensure directory exists
-    await mkdir("data", { recursive: true });
-
-    // IMPORTANT: lock writes to /data only
-    const filePath = path.resolve("data", filename);
-
-    await writeFile(filePath, content, "utf8");
-
-    res.json({ success: true, path: filePath });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Failed to write file" });
   }
-});
+);
 
 app.listen(3000, () => {
-  console.log("Server running at http://localhost:3000");
+  console.log("API server running at http://localhost:3000");
 });

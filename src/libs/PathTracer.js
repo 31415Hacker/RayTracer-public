@@ -56,8 +56,6 @@ const pack16x2 = (a, b) =>
 const unpack16x2 = (u, idx) =>
   f16ToF32((u >>> (idx * 16)) & 0xffff);
 
-const BVH_EPSILON = 5e-4;
-
 export class PathTracer {
   constructor(canvas) {
     this.canvas = canvas;
@@ -647,13 +645,6 @@ export class PathTracer {
             boundsFP32.max[k] = Math.max(boundsFP32.max[k], b.max[k]);
           }
         }
-      }
-
-      // ---- conservative expand (constant epsilon) ----
-      const eps = BVH_EPSILON; // your existing constant
-      for (let k = 0; k < 3; k++) {
-        boundsFP32.min[k] -= eps;
-        boundsFP32.max[k] += eps;
       }
 
       // ---- pack once ----
