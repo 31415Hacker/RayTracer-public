@@ -28,7 +28,7 @@ await pathTracer.initialize();
 ============================================================ */
 
 const scene = new PTScene.Scene();
-await scene.loadGLB("/assets/dragon.glb", {
+await scene.loadGLB("/assets/plane.glb", {
    normalize: true,
    mode: "cube"
 });

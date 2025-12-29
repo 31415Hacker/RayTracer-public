@@ -13,7 +13,7 @@ Before we install and use the path tracer, we need some prerequisites.
 1. **Node.js** - This is the runtime environment for running the code. You can download it from [nodejs.org](https://nodejs.org/en/), or use a package manager.
 Here's an example in **Linux Ubuntu 22.04 LTS**:
 ```bash
-sudo apt install node
+sudo apt install npm
 ```
 We need the latest version, so it is recommended to use something like **Git** to install it.
 

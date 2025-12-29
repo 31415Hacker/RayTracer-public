@@ -680,16 +680,17 @@ export class PathTracer {
   async buildBVH(trianglesData) {
     const device = this.device;
     if (!device) return;
-
+    
     let start = performance.now();
-
     const numTriangles = (trianglesData.length / 9) | 0;
 
     // upload triangles
     device.queue.writeBuffer(this.buffers.triangles, 0, trianglesData);
 
     // build Morton + sort on CPU
+    let mortonSortStart = performance.now();
     const { mortonSorted, triIndexSorted } = this.buildMortonAndSort(trianglesData);
+    let mortonSortEnd = performance.now();
 
     // ensure BVH2 + aux sizes
     const { numNodes2, bytes: bvh2Bytes } = this.computeBVH2Sizing(numTriangles);
@@ -729,14 +730,19 @@ export class PathTracer {
     pass.dispatchWorkgroups(Math.ceil(numTriangles / BVH_WORKGROUP_SIZE));
 
     pass.end();
+    
+    let buildBVH2Start = performance.now();
     device.queue.submit([encoder.finish()]);
     await device.queue.onSubmittedWorkDone();
+    let buildBVH2End = performance.now();
 
     // read back BVH2 once (scene build time)
     const bvh2U32 = await this.readBVH2(bvh2Bytes);
 
     // collapse to BVH4
+    let collapseBVH4Start = performance.now();
     const { bvh4U32, numNodes4 } = this.collapseLBVH2ToBVH4(bvh2U32, numTriangles);
+    let collapseBVH4End = performance.now();
 
     // upload BVH4
     this.ensureBVH4Buffer(Math.max(1, numNodes4));
@@ -745,6 +751,9 @@ export class PathTracer {
     let end = performance.now();
 
     // done
+    console.log("Morton Sort Time:", mortonSortEnd - mortonSortStart, "ms")
+    console.log("BVH2 Build Time:", buildBVH2End - buildBVH2Start, "ms")
+    console.log("BVH Collapse Time:", collapseBVH4End - collapseBVH4Start, "ms")
     console.log("BVH Build Time:", end - start, "ms")
   }
 
