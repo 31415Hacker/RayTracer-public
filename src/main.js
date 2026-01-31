@@ -70,6 +70,8 @@ async function main() {
 
    await pathTracer.render();
 
+   console.log(pathTracer.estimateVRAMUsage());
+
    requestAnimationFrame(main);
 }
 
